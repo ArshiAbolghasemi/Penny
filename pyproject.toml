@@ -9,34 +9,24 @@ description = "Regime-conditioned diffusion model for crypto limit order book ge
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "diffusers>=0.32.0",
-    "dvc[s3]>=3.56.0",
+    "diffusers>=0.38.0",
+    "dvc[s3]>=3.67.1",
     "loguru>=0.7.3",
-    "numpy>=1.26.0,<3.0.0",
-    "pandas>=2.2.0",
-    "pyarrow>=16.0.0",
-    "scikit-learn>=1.4.0",
-    "scipy>=1.13.0",
-    "torch>=2.5.0",
-    "torchvision>=0.20.0",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "pyarrow>=24.0.0",
+    "scikit-learn>=1.7.2",
+    "scipy>=1.15.3",
+    "torch>=2.12.0",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/penny"]
 
-[tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
 [dependency-groups]
 dev = [
     "jupyter>=1.1.1",
-    "matplotlib>=3.10.0",
-    "pytest>=8.0.0",
-    "ruff>=0.4.0",
+    "matplotlib>=3.10.9",
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
 ]
