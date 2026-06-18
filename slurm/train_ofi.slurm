@@ -1,22 +1,17 @@
 #!/bin/bash
 
-SBATCH --job-name=penny-ofi
-SBATCH --output=logs/%x-%j.out
-SBATCH --error=logs/%x-%j.err
-#SBATCH --time=24:00:00
+#SBATCH --job-name=penny-ofi
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-SBATCH --gres=gpu:1
-SBATCH -p gpu-short
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --gres=gpu:1
+#SBATCH -p gpu-short
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-
-mkdir -p logs
 
 echo "Running Penny OFI training from $ROOT_DIR"
 echo "Host: $(hostname)"
