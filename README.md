@@ -597,6 +597,8 @@ uv sync --extra cu128        # e.g. A100 / H100 on CUDA 12.8
 uv sync --extra cu129        # if your node/toolchain is on CUDA 12.9
 # or
 uv sync --extra cpu          # CPU-only environment
+# or
+uv sync --extra mac          # macOS / Apple Silicon (MPS)
 
 # Fetch data from the Cloudflare R2 DVC remote
 uv run dvc pull
@@ -657,7 +659,7 @@ All settings live in `configs/config.json` (OFI mode, default) and `configs/conf
 | `lambda_trend` | `0.5` | Weight of the trend loss relative to the diffusion loss |
 | `n_samples` | `20` | Diffusion samples per window at evaluation |
 | `val_eval_windows` | `50` | Validation windows sampled for label accuracy each epoch |
-| `device` | `"cuda"` | Training device (`"cuda"` or `"cpu"`) |
+| `device` | `"cuda"` | Training device (`"cuda"`, `"mps"`, or `"cpu"`) |
 | `cache_dir` | `"data/cache"` | Directory for the `.npz` dataset cache |
 | `checkpoint_root` | `"checkpoints"` | Root directory for checkpoint folders |
 

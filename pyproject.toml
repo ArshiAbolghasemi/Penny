@@ -38,6 +38,12 @@ cpu = [
     "torch==2.8.0",
     "torchvision==0.23.0",
 ]
+# Apple Silicon / macOS — standard PyPI wheel includes MPS.
+# Set "device": "mps" in your config, or leave "cuda" (auto-falls back to MPS).
+mps = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/penny"]
@@ -77,6 +83,15 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv]
+conflicts = [
+    [
+        { extra = "cu126" },
+        { extra = "cu128" },
+        { extra = "cu129" },
+        { extra = "cpu" },
+        { extra = "mps" },
+    ],
+]
 environments = [
     "sys_platform == 'linux'",
     "sys_platform == 'darwin'",
