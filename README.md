@@ -24,10 +24,9 @@ exchange), covering approximately 9 days of data.
 10. [Training](#10-training)
 11. [Validation](#11-validation)
 12. [Test Evaluation](#12-test-evaluation)
-13. [Inference](#13-inference)
-14. [Setup and Usage](#14-setup-and-usage)
-15. [Configuration](#15-configuration)
-16. [Project Structure](#16-project-structure)
+13. [Setup and Usage](#13-setup-and-usage)
+14. [Configuration](#14-configuration)
+15. [Project Structure](#15-project-structure)
 
 ---
 
@@ -587,25 +586,7 @@ distance.
 
 ---
 
-## 13. Inference
-
-At inference time, only T_past snapshots of real order-book data are required.  The procedure:
-
-1. Build the `(R, T_total, 2)` image with the past filled in and the future zeroed out.
-2. Normalize with the frozen training statistics from the checkpoint.
-3. Run the DDIM + RePaint sampler `n_samples = 20` times to generate 20 candidate futures.
-4. Reconstruct the future mid-price from each sample (LOB price channel or γ-integrated OFI).
-5. Compute the trend ratio `l` for each sample and classify with the frozen `alpha`.
-6. Take the **modal label** across the 20 samples as the final prediction.
-
-The inference output includes: the modal label and its name (down/stationary/up), the vote
-distribution (how many samples voted for each class), the mean and standard deviation of `l`
-across samples, the signal ratio (mean_l / std_l, a conviction measure), and the mean
-reconstructed future mid-price trajectory.
-
----
-
-## 14. Setup and Usage
+## 13. Setup and Usage
 
 ```bash
 # Install dependencies
@@ -624,16 +605,11 @@ uv run python scripts/train_penny.py
 # Train in LOB mode
 uv run python scripts/train_penny.py configs/config_lob.json
 
-# Inference from a saved checkpoint
-uv run python scripts/infer_penny.py \
-    --checkpoint checkpoints/ofi_nobitex_BTCIRT_<stamp> \
-    --orderbook data/nobitex_data/BTCIRT_orderbook.csv \
-    --trades data/nobitex_data/BTCIRT_trades.csv
 ```
 
 ---
 
-## 15. Configuration
+## 14. Configuration
 
 All settings live in `configs/config.json` (OFI mode, default) and `configs/config_lob.json`
 (LOB mode).
@@ -661,7 +637,7 @@ All settings live in `configs/config.json` (OFI mode, default) and `configs/conf
 | `beta_start` | `0.0001` | First beta in the DDPM linear schedule |
 | `beta_end` | `0.02` | Last beta in the DDPM linear schedule |
 | `T_max` | `1000` | Total diffusion timesteps |
-| `ddim_steps` | `50` | DDIM reverse steps at inference/evaluation |
+| `ddim_steps` | `50` | DDIM reverse steps at evaluation |
 | `unet_filters` | `[64,128,256,256]` | Channel widths for the 4 UNet blocks |
 | `self_attn_at_block` | `4` | Block index (1-based) with self-attention (bottleneck) |
 | `dropout` | `0.1` | Dropout rate inside UNet blocks |
@@ -673,7 +649,7 @@ All settings live in `configs/config.json` (OFI mode, default) and `configs/conf
 | `epochs` | `200` | Maximum training epochs |
 | `patience` | `20` | Early stopping patience (val diffusion loss) |
 | `lambda_trend` | `0.5` | Weight of the trend loss relative to the diffusion loss |
-| `n_samples` | `20` | Diffusion samples per window at inference/evaluation |
+| `n_samples` | `20` | Diffusion samples per window at evaluation |
 | `val_eval_windows` | `50` | Validation windows sampled for label accuracy each epoch |
 | `device` | `"cuda"` | Training device (`"cuda"` or `"cpu"`) |
 | `cache_dir` | `"data/cache"` | Directory for the `.npz` dataset cache |
@@ -681,7 +657,7 @@ All settings live in `configs/config.json` (OFI mode, default) and `configs/conf
 
 ---
 
-## 16. Project Structure
+## 15. Project Structure
 
 ```
 configs/
@@ -694,7 +670,6 @@ data/                    Raw CSV data (DVC-tracked, not in Git)
   ...
 scripts/
   train_penny.py         Training entry point
-  infer_penny.py         Inference entry point
   trim_gap.py            Drops pre-gap rows from nobitex CSVs
 src/penny/
   labels.py              DeepLOB trend ratio, class thresholding, alpha calibration
