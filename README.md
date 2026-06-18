@@ -590,7 +590,13 @@ distance.
 
 ```bash
 # Install dependencies
-uv sync
+uv sync --extra cu126        # e.g. P100, V100, RTX 3090 if your cluster uses CUDA 12.6 wheels
+# or
+uv sync --extra cu128        # e.g. A100 / H100 on CUDA 12.8
+# or
+uv sync --extra cu129        # if your node/toolchain is on CUDA 12.9
+# or
+uv sync --extra cpu          # CPU-only environment
 
 # Fetch data from the Cloudflare R2 DVC remote
 uv run dvc pull

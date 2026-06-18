@@ -17,8 +17,26 @@ dependencies = [
     "pyarrow>=16.0.0",
     "scikit-learn>=1.4.0",
     "scipy>=1.13.0",
-    "torch>=2.5.0",
-    "torchvision>=0.20.0",
+]
+
+[project.optional-dependencies]
+# Explicit CUDA-version extras for Linux GPU installs.
+cu126 = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
+cu128 = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
+cu129 = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
+# Optional CPU-only extra for local development or non-GPU nodes.
+cpu = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -26,15 +44,36 @@ packages = ["src/penny"]
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu126", extra = "cu126", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu129", extra = "cu129", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux'" },
 ]
 torchvision = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu126", extra = "cu126", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu129", extra = "cu129", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux'" },
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv]
@@ -50,4 +89,3 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.4.0",
 ]
-
