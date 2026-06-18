@@ -125,6 +125,57 @@ Default dimensions: **T_past = 156** (≈ 26 min), **T_future = 100** (≈ 17 mi
 In OFI mode, the channel-0 value at column 0 of the LOB rows is forced to zero because OFI
 requires a preceding snapshot, which does not exist at the window boundary.
 
+#### OFI mode — feature image layout
+
+```mermaid
+block-beta
+  columns 3
+  rl(["Row axis  (R = 23)"]):1
+  past(["PAST — 156 cols  (mask = 0, known)"]):1
+  future(["FUTURE — 100 cols  (mask = 1, inpainted)"]):1
+
+  bid_label["Bid levels\nrow 0 → 9\n(deepest → best)"]:1
+  bid_past["Ch 0  OFI per level  (buy-positive)\nCh 1  resting depth  +volume"]:1
+  bid_fut["Ch 0  ░░ generated ░░\nCh 1  ░░ generated ░░"]:1
+
+  sp["── best bid (row 9)  │  best ask (row 10) ── spread centre"]:3
+
+  ask_label["Ask levels\nrow 10 → 19\n(best → deepest)"]:1
+  ask_past["Ch 0  OFI per level  (buy-positive)\nCh 1  resting depth  −volume"]:1
+  ask_fut["Ch 0  ░░ generated ░░\nCh 1  ░░ generated ░░"]:1
+
+  tr_label["Trade rows\n20, 21, 22"]:1
+  tr_past["Ch 0  0\nCh 1  log-vol  |  buy-vol%  |  buy-cnt%"]:1
+  tr_fut["Ch 0  ░░ generated ░░\nCh 1  ░░ generated ░░"]:1
+```
+
+#### LOB mode — feature image layout
+
+```mermaid
+block-beta
+  columns 3
+  rl(["Row axis  (R = 23)"]):1
+  past(["PAST — 156 cols  (mask = 0, known)"]):1
+  future(["FUTURE — 100 cols  (mask = 1, inpainted)"]):1
+
+  bid_label["Bid levels\nrow 0 → 9\n(deepest → best)"]:1
+  bid_past["Ch 0  bid_price_i − mid  (negative offset)\nCh 1  resting depth  +volume"]:1
+  bid_fut["Ch 0  ░░ generated ░░\nCh 1  ░░ generated ░░"]:1
+
+  sp["── best bid (row 9)  │  best ask (row 10) ── spread centre"]:3
+
+  ask_label["Ask levels\nrow 10 → 19\n(best → deepest)"]:1
+  ask_past["Ch 0  ask_price_i − mid  (positive offset)\nCh 1  resting depth  −volume"]:1
+  ask_fut["Ch 0  ░░ generated ░░\nCh 1  ░░ generated ░░"]:1
+
+  tr_label["Trade rows\n20, 21, 22"]:1
+  tr_past["Ch 0  0\nCh 1  log-vol  |  buy-vol%  |  buy-cnt%"]:1
+  tr_fut["Ch 0  ░░ generated ░░\nCh 1  ░░ generated ░░"]:1
+```
+
+The two modes are structurally identical — only channel 0 of the LOB rows differs (price offset vs. OFI).
+Trade rows, channel 1, the mask, and the inpainting region are the same in both modes.
+
 ### Square padding
 
 The UNet requires a square input.  Since R = 23 is much smaller than T_total = 256, each row
@@ -294,6 +345,64 @@ context.  Each block has 2 convolutional layers with dropout 0.1.  Total trainab
 
 The image is processed at full 256×256 resolution throughout; no explicit temporal downsampling
 is applied inside the UNet (the time axis is treated as the width dimension).
+
+#### Training data flow through the model
+
+```mermaid
+flowchart TD
+    x0["Clean image x₀  ·  (2 × 256 × 256)"]
+    t["Timestep  t ~ Uniform{0 … 999}"]
+    history["History  =  x₀ × (1 − mask)\nfuture cols zeroed  ·  (2 × 256 × 256)"]
+    mask_node["Mask  ·  (1 × 256 × 256)\n0 = past  ·  1 = future"]
+    xt["Noisy image  xₜ  =  √ᾱₜ x₀  +  √(1−ᾱₜ) ε"]
+    cat["5-channel input\n[ xₜ ‖ history ‖ mask ]  ·  (5 × 256 × 256)"]
+
+    subgraph UNet["UNet2DModel  (~12 M params)"]
+        direction TB
+        subgraph enc["Encoder  ↓"]
+            e1["Block 1  ·  Conv 64ch"]
+            e2["Block 2  ·  Conv 128ch"]
+            e3["Block 3  ·  Conv 256ch"]
+            e4["Block 4  ·  AttnConv 256ch  ← bottleneck"]
+        end
+        subgraph dec["Decoder  ↑  + skip connections"]
+            d4["Block 4  ·  AttnConv 256ch"]
+            d3["Block 3  ·  Conv 256ch"]
+            d2["Block 2  ·  Conv 128ch"]
+            d1["Block 1  ·  Conv 64ch"]
+        end
+        e1 --> e2 --> e3 --> e4 --> d4 --> d3 --> d2 --> d1
+        e3 -. skip .-> d3
+        e2 -. skip .-> d2
+        e1 -. skip .-> d1
+    end
+
+    eps["Predicted noise  ε̂  ·  (2 × 256 × 256)"]
+    diff_loss["Masked diffusion loss\nMSE(ε̂, ε)  over future region only"]
+    tweedie["Tweedie estimate\nx̂₀  =  (xₜ − √(1−ᾱₜ)·ε̂) / √ᾱₜ"]
+    mid_rec["Painted future mid-price\nLOB: read price channel\nOFI: boundary_mid + cumsum(OFI_best) × γ"]
+    l_pred["l_pred  =  (mean fwd k  −  bwd) / bwd"]
+
+    subgraph th["Trend Head  (6 params)"]
+        fc["Linear 1 → 3  →  class logits"]
+    end
+
+    wce["Weighted cross-entropy\nw(t) = (1 − t / T_max)²  ·  CE(logits, label)"]
+    total["Total loss  =  L_diff  +  λ · L_trend     (λ = 0.5)"]
+
+    x0 --> xt
+    x0 --> history
+    t --> xt
+    xt --> cat
+    history --> cat
+    mask_node --> cat
+    cat --> enc
+    dec --> eps
+    eps --> diff_loss
+    eps --> tweedie --> mid_rec --> l_pred --> fc --> wce
+    diff_loss --> total
+    wce --> total
+```
 
 ### Trend Head
 
