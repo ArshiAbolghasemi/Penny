@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --gres=gpu:1
-#SBATCH -p gpu-A100
+#SBATCH -p gpu-short
 
 set -euo pipefail
 
