@@ -1,4 +1,4 @@
-"""DeepLOB dataset — re-exported from the shared utility module."""
+"""TimesFM dataset — re-exported from the shared utility module."""
 
 from crypto.utils.dataset import LOBDataset, build_datasets  # noqa: F401
 

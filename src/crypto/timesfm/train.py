@@ -1,8 +1,9 @@
-"""Training entry point for DeepLOB.
+"""Training entry point for the TimesFM direction classifier.
 
+Loss = CrossEntropy(logits, label).
 Usage::
 
-    uv run python -m crypto.deeplob.train configs/binance_deeplob/btcusdt.json
+    uv run python -m crypto.timesfm.train configs/crypto/timesfm/ofi.json
 """
 
 from __future__ import annotations
@@ -23,10 +24,10 @@ from crypto.utils.training import build_cosine_schedule, resolve_device
 
 from . import evaluate as ev
 from .dataset import build_datasets
-from .model import DeepLOB, count_parameters
+from .model import TimesFMClassifier, count_parameters
 
 
-def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
+def train_one_epoch(model, loader, optimizer, scheduler, device):
     model.train()
     total, n = 0.0, 0
     for batch in loader:
@@ -35,7 +36,7 @@ def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
         loss = F.cross_entropy(logits, label)
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         scheduler.step()
         total += loss.item()
@@ -44,7 +45,7 @@ def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
 
 
 @torch.no_grad()
-def _validate(model, loader, device):
+def validate(model, loader, device):
     model.eval()
     ce_total, correct, n = 0.0, 0, 0
     for batch in loader:
@@ -57,12 +58,11 @@ def _validate(model, loader, device):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train DeepLOB on Binance LOB data.")
+    parser = argparse.ArgumentParser(description="Train Penny TimesFM classifier.")
     parser.add_argument(
-        "config", nargs="?", default="configs/crypto/deeplob/btcusdt.json"
+        "config", nargs="?", default="configs/crypto/timesfm/btcusdt_ofi.json"
     )
     args = parser.parse_args()
-
     config_path = Path(args.config)
     if not config_path.exists():
         print(f"error: config not found: {config_path}", file=sys.stderr)
@@ -70,9 +70,11 @@ def main() -> None:
     config = json.loads(config_path.read_text())
 
     device = resolve_device(config["device"])
-    grad_clip = config.get("grad_clip", 1.0)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_dir = Path(config["checkpoint_dir"]) / f"deeplob_{config['symbol']}_{stamp}"
+    ckpt_dir = (
+        Path(config["checkpoint_dir"])
+        / f"timesfm_{config['symbol']}_{config['feature_mode']}_{stamp}"
+    )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     logger.add(ckpt_dir / "train.log", level="DEBUG")
 
@@ -80,7 +82,9 @@ def main() -> None:
     config["n_features"] = meta["n_features"]
 
     cb = meta["class_balance"]
-    logger.info("DeepLOB — symbol={}", config["symbol"])
+    logger.info(
+        "TimesFM — symbol={} feature_mode={}", config["symbol"], config["feature_mode"]
+    )
     logger.info("  snapshots : {:,}", meta["n_snapshots"])
     logger.info(
         "  windows   : train={} val={} test={}",
@@ -97,9 +101,11 @@ def main() -> None:
     )
     logger.info("  features  : {}", meta["n_features"])
 
-    model = DeepLOB(config).to(device)
+    model = TimesFMClassifier(config).to(device)
     logger.info(
-        "  params    : ~{:.2f}M  |  device {}", count_parameters(model) / 1e6, device
+        "  params    : ~{:.2f}M  |  device {}",
+        count_parameters(model) / 1e6,
+        device,
     )
 
     nw = min(4, torch.get_num_threads())
@@ -113,21 +119,18 @@ def main() -> None:
     val_loader = DataLoader(
         val_ds, batch_size=config["batch_size"], shuffle=False, num_workers=0
     )
-
+    total_steps = max(config["epochs"] * len(train_loader), 1)
     optimizer = AdamW(
         model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
     )
-    total_steps = config["epochs"] * len(train_loader)
     scheduler = build_cosine_schedule(optimizer, config, total_steps)
 
-    best_val_ce, patience_count, history = float("inf"), 0, []
+    best_val_ce, patience, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
-        train_ce = _train_epoch(
-            model, train_loader, optimizer, scheduler, device, grad_clip
-        )
-        val_ce, val_acc = _validate(model, val_loader, device)
+        train_ce = train_one_epoch(model, train_loader, optimizer, scheduler, device)
+        val_ce, val_acc = validate(model, val_loader, device)
         logger.info(
-            "epoch {} | train_ce={:.4f} | val_ce={:.4f} | val_acc={:.4f}",
+            "epoch {} | train ce={:.4f} | val ce={:.4f} acc={:.4f}",
             epoch,
             train_ce,
             val_ce,
@@ -136,9 +139,8 @@ def main() -> None:
         history.append(
             {"epoch": epoch, "train_ce": train_ce, "val_ce": val_ce, "val_acc": val_acc}
         )
-
         if val_ce < best_val_ce:
-            best_val_ce, patience_count = val_ce, 0
+            best_val_ce, patience = val_ce, 0
             torch.save(
                 {
                     "model": model.state_dict(),
@@ -148,16 +150,15 @@ def main() -> None:
                 },
                 ckpt_dir / "best.pt",
             )
-            logger.info("  -> checkpoint saved (val_ce={:.4f})", best_val_ce)
+            logger.info("  -> checkpoint saved (val ce {:.4f})", best_val_ce)
         else:
-            patience_count += 1
-            if patience_count >= config["patience"]:
+            patience += 1
+            if patience >= config["patience"]:
                 logger.info("early stopping at epoch {}", epoch)
                 break
 
     (ckpt_dir / "config.json").write_text(json.dumps(config, indent=2))
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
-
     ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
     ev.run_test(model, test_ds, config, device)

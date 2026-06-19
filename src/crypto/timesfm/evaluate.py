@@ -1,4 +1,4 @@
-"""DeepLOB test-set evaluation — re-exported from the shared utility module."""
+"""TimesFM test-set evaluation — re-exported from the shared utility module."""
 
 from crypto.utils.evaluate import run_test  # noqa: F401
 

@@ -1,8 +1,22 @@
-"""Training entry point for DeepLOB.
+"""Training entry point for JointDiffusion.
+
+Joint objective per batch (Deja et al., 2023):
+
+    t      ~ Uniform{0, …, T_max-1}                      (per-sample timestep)
+    x_t    = sqrt(abar_t)·x0 + sqrt(1-abar_t)·noise        (forward diffusion)
+    eps, logits = model(x_t, t)
+    L_diff = MSE(eps, noise)                               (denoising)
+    L_cls  = w(t) · CE(logits, label),  w(t) = (1 - t/T_max)^2
+    L      = L_diff + lambda_trend · mean(L_cls)
+
+The timestep weight ``w(t)`` down-weights classification on heavily-noised
+windows (whose label is barely recoverable), keeping the classifier well-posed
+while the shared encoder still benefits from the denoising signal at all noise
+levels.  At inference the trend is read from the clean window at ``t = 0``.
 
 Usage::
 
-    uv run python -m crypto.deeplob.train configs/binance_deeplob/btcusdt.json
+    uv run python -m crypto.jointdiff.train configs/crypto/jointdiff/btcusdt_ofi.json
 """
 
 from __future__ import annotations
@@ -23,28 +37,52 @@ from crypto.utils.training import build_cosine_schedule, resolve_device
 
 from . import evaluate as ev
 from .dataset import build_datasets
-from .model import DeepLOB, count_parameters
+from .diffusion import Diffusion
+from .model import JointDiffusion, count_parameters
 
 
-def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
+def _train_epoch(model, diffusion, loader, optimizer, scheduler, config, device):
     model.train()
-    total, n = 0.0, 0
+    t_max = diffusion.T_max
+    lam = config.get("lambda_trend", 1.0)
+    grad_clip = config.get("grad_clip", 1.0)
+    tot = dif = trd = 0.0
+    n = 0
     for batch in loader:
+        x0 = batch["x"].to(device).float()
         label = batch["label"].to(device)
-        logits = model.predict(batch, device)
-        loss = F.cross_entropy(logits, label)
+        b = x0.shape[0]
+
+        t = torch.randint(0, t_max, (b,), device=device)
+        noise = torch.randn_like(x0)
+        x_t = diffusion.q_sample(x0, t, noise)
+
+        eps_hat, logits = model(x_t, t)
+        diff_loss = F.mse_loss(eps_hat, noise)
+
+        ce = F.cross_entropy(logits, label, reduction="none")
+        w = (1.0 - t.float() / t_max) ** 2
+        cls_loss = (w * ce).mean()
+
+        loss = diff_loss + lam * cls_loss
+
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         scheduler.step()
-        total += loss.item()
+
+        tot += loss.item()
+        dif += diff_loss.item()
+        trd += cls_loss.item()
         n += 1
-    return total / max(n, 1)
+    n = max(n, 1)
+    return {"total": tot / n, "diff": dif / n, "trend": trd / n}
 
 
 @torch.no_grad()
 def _validate(model, loader, device):
+    """Validate on the *classification* objective at t=0 (the inference setting)."""
     model.eval()
     ce_total, correct, n = 0.0, 0, 0
     for batch in loader:
@@ -57,9 +95,11 @@ def _validate(model, loader, device):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train DeepLOB on Binance LOB data.")
+    parser = argparse.ArgumentParser(
+        description="Train JointDiffusion on Binance LOB data."
+    )
     parser.add_argument(
-        "config", nargs="?", default="configs/crypto/deeplob/btcusdt.json"
+        "config", nargs="?", default="configs/crypto/jointdiff/btcusdt_ofi.json"
     )
     args = parser.parse_args()
 
@@ -70,9 +110,11 @@ def main() -> None:
     config = json.loads(config_path.read_text())
 
     device = resolve_device(config["device"])
-    grad_clip = config.get("grad_clip", 1.0)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_dir = Path(config["checkpoint_dir"]) / f"deeplob_{config['symbol']}_{stamp}"
+    ckpt_dir = (
+        Path(config["checkpoint_dir"])
+        / f"jointdiff_{config['symbol']}_{config['feature_mode']}_{stamp}"
+    )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     logger.add(ckpt_dir / "train.log", level="DEBUG")
 
@@ -80,7 +122,11 @@ def main() -> None:
     config["n_features"] = meta["n_features"]
 
     cb = meta["class_balance"]
-    logger.info("DeepLOB — symbol={}", config["symbol"])
+    logger.info(
+        "JointDiffusion — symbol={} feature_mode={}",
+        config["symbol"],
+        config["feature_mode"],
+    )
     logger.info("  snapshots : {:,}", meta["n_snapshots"])
     logger.info(
         "  windows   : train={} val={} test={}",
@@ -97,9 +143,13 @@ def main() -> None:
     )
     logger.info("  features  : {}", meta["n_features"])
 
-    model = DeepLOB(config).to(device)
+    diffusion = Diffusion(config, device)
+    model = JointDiffusion(config).to(device)
     logger.info(
-        "  params    : ~{:.2f}M  |  device {}", count_parameters(model) / 1e6, device
+        "  params    : ~{:.2f}M  |  lambda_trend={}  |  device {}",
+        count_parameters(model) / 1e6,
+        config.get("lambda_trend", 1.0),
+        device,
     )
 
     nw = min(4, torch.get_num_threads())
@@ -122,20 +172,20 @@ def main() -> None:
 
     best_val_ce, patience_count, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
-        train_ce = _train_epoch(
-            model, train_loader, optimizer, scheduler, device, grad_clip
+        tr = _train_epoch(
+            model, diffusion, train_loader, optimizer, scheduler, config, device
         )
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
-            "epoch {} | train_ce={:.4f} | val_ce={:.4f} | val_acc={:.4f}",
+            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} val_acc={:.4f}",
             epoch,
-            train_ce,
+            tr["total"],
+            tr["diff"],
+            tr["trend"],
             val_ce,
             val_acc,
         )
-        history.append(
-            {"epoch": epoch, "train_ce": train_ce, "val_ce": val_ce, "val_acc": val_acc}
-        )
+        history.append({"epoch": epoch, **tr, "val_ce": val_ce, "val_acc": val_acc})
 
         if val_ce < best_val_ce:
             best_val_ce, patience_count = val_ce, 0
