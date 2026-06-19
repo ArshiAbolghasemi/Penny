@@ -58,7 +58,9 @@ def _validate(model, loader, device):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train LOBTransformer on Binance LOB data.")
+    parser = argparse.ArgumentParser(
+        description="Train LOBTransformer on Binance LOB data."
+    )
     parser.add_argument(
         "config", nargs="?", default="configs/crypto/lobtransformer/btcusdt_ofi.json"
     )
@@ -122,7 +124,9 @@ def main() -> None:
         val_ds, batch_size=config["batch_size"], shuffle=False, num_workers=0
     )
     total_steps = max(config["epochs"] * len(train_loader), 1)
-    optimizer = AdamW(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
+    optimizer = AdamW(
+        model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
+    )
     scheduler = build_cosine_schedule(optimizer, config, total_steps)
 
     best_val_ce, patience, history = float("inf"), 0, []
@@ -131,7 +135,10 @@ def main() -> None:
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
             "epoch {} | train ce={:.4f} | val ce={:.4f} acc={:.4f}",
-            epoch, train_ce, val_ce, val_acc,
+            epoch,
+            train_ce,
+            val_ce,
+            val_acc,
         )
         history.append(
             {"epoch": epoch, "train_ce": train_ce, "val_ce": val_ce, "val_acc": val_acc}
@@ -139,7 +146,12 @@ def main() -> None:
         if val_ce < best_val_ce:
             best_val_ce, patience = val_ce, 0
             torch.save(
-                {"model": model.state_dict(), "config": config, "alpha": alpha, "epoch": epoch},
+                {
+                    "model": model.state_dict(),
+                    "config": config,
+                    "alpha": alpha,
+                    "epoch": epoch,
+                },
                 ckpt_dir / "best.pt",
             )
             logger.info("  -> checkpoint saved (val ce {:.4f})", best_val_ce)
