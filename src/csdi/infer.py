@@ -57,7 +57,11 @@ def predict(checkpoint_dir, past_orderbook, trades=None, device="cpu"):
     return {
         "label": label,
         "label_name": CLASS_NAMES[label],
-        "probs": {"down": float(probs[0]), "stationary": float(probs[1]), "up": float(probs[2])},
+        "probs": {
+            "down": float(probs[0]),
+            "stationary": float(probs[1]),
+            "up": float(probs[2]),
+        },
     }
 
 
@@ -79,7 +83,9 @@ def main() -> None:
     out = predict(args.checkpoint, ob, trades, args.device)
     print("Penny CSDI signal")
     print(f"  label  : {out['label']} ({out['label_name']})")
-    print(f"  probs  : down={out['probs']['down']:.3f}  stat={out['probs']['stationary']:.3f}  up={out['probs']['up']:.3f}")
+    print(
+        f"  probs  : down={out['probs']['down']:.3f}  stat={out['probs']['stationary']:.3f}  up={out['probs']['up']:.3f}"
+    )
 
 
 if __name__ == "__main__":

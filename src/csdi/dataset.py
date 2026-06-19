@@ -135,9 +135,7 @@ def build_datasets(config: dict):
             if config.get("label_alpha", -1) > 0
             else lab.calibrate_alpha(train_l)
         )
-        labels = {
-            s: _window_labels(starts[s], mid, config, alpha)[0] for s in starts
-        }
+        labels = {s: _window_labels(starts[s], mid, config, alpha)[0] for s in starts}
         np.savez_compressed(
             cache,
             rows_norm=rows_norm,

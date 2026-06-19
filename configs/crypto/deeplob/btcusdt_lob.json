@@ -1,0 +1,31 @@
+{
+  "symbol": "BTCUSDT",
+  "data_dir": "data/binance",
+  "cache_dir": "data/cache/binance",
+  "checkpoint_dir": "checkpoints/binance_deeplob",
+
+  "n_lob_levels": 10,
+  "feature_mode": "lob",
+
+  "T_past": 100,
+  "label_k": 5,
+  "label_alpha": -1,
+
+  "train_frac": 0.70,
+  "val_frac": 0.15,
+  "stride": 1,
+
+  "deeplob_conv_filters": 32,
+  "deeplob_inception_filters": 64,
+  "deeplob_lstm_hidden": 64,
+  "deeplob_dropout": 0.1,
+
+  "batch_size": 64,
+  "lr": 1e-4,
+  "weight_decay": 1e-5,
+  "warmup_steps": 500,
+  "grad_clip": 1.0,
+  "epochs": 50,
+  "patience": 10,
+  "device": "cuda"
+}

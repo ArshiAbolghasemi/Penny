@@ -76,9 +76,7 @@ class CSDIClassifier(nn.Module):
 
         chans = [base * (2**i) for i in range(depth + 1)]  # encoder widths
         self.stem = DoubleConv(2, base)
-        self.downs = nn.ModuleList(
-            Down(chans[i], chans[i + 1]) for i in range(depth)
-        )
+        self.downs = nn.ModuleList(Down(chans[i], chans[i + 1]) for i in range(depth))
         self.ups = nn.ModuleList(
             Up(chans[i + 1], chans[i], chans[i]) for i in reversed(range(depth))
         )
