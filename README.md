@@ -17,7 +17,6 @@ LOB direction forecasting on Binance crypto data. Three model families — **Dee
 - [Project Structure](#project-structure)
 - [Setup](#setup)
 - [Training](#training)
-- [Inference](#inference)
 - [Slurm](#slurm)
 - [Configuration Reference](#configuration-reference)
 
@@ -242,8 +241,6 @@ L       = L_diff + λ · L_cls
 
 `w(t)` equals 1 at `t = 0` (clean window, label fully recoverable) and 0 at `t = T` (pure noise). This keeps the classifier signal meaningful at every noise level without requiring the model to classify from noise.
 
-**Inference:** `model.predict(batch, device)` runs the clean window through the U-Net at `t = 0` and returns the bottleneck logits. No sampling or denoising is performed.
-
 **Default hyperparameters:**
 
 | Key | OFI | LOB |
@@ -334,8 +331,7 @@ Penny/
 │   │   └── train.py            DDPMScheduler from diffusers
 │   └── lobtransformer/
 │       ├── model.py            Linear projection → Transformer Encoder → mean-pool → head
-│       ├── train.py
-│       └── infer.py            single-window inference from Binance snapshot files
+│       └── train.py            single-window inference from Binance snapshot files
 ├── configs/crypto/
 │   ├── deeplob/                btcusdt_ofi.json  btcusdt_lob.json
 │   ├── jointdiff/              btcusdt_ofi.json  btcusdt_lob.json
@@ -412,31 +408,6 @@ The feature cache is built on the first run and reused automatically:
 ```
 {cache_dir}/{symbol}_n{n}_{mode}_lob.{feat,mid,ts}.npy
 ```
-
----
-
-## Inference
-
-LOBTransformer includes a single-window inference script:
-
-```bash
-uv run python -m crypto.lobtransformer.infer \
-    --checkpoint checkpoints/lobtransformer_BTCUSDT_ofi_20240115_120000 \
-    --snapshot   data/binance/binance_book_snapshot_25_2024-01-15_BTCUSDT.csv.gz \
-    --trades     data/binance/binance_trades_2024-01-15_BTCUSDT.csv.gz \
-    --quotes     data/binance/binance_quotes_2024-01-15_BTCUSDT.csv.gz \
-    --device     cpu
-```
-
-Output:
-
-```
-LOBTransformer signal
-  label : 2 (up)
-  probs : down=0.082  stat=0.251  up=0.667
-```
-
-`--trades` and `--quotes` are optional; missing files fall back to zero-filled aggregates. The last `T_past` rows of the snapshot file are used. Features are normalized by the window's own mean/std at inference time.
 
 ---
 
