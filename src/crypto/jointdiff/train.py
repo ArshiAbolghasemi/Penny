@@ -35,8 +35,8 @@ from torch.utils.data import DataLoader
 
 from crypto.utils.training import build_cosine_schedule, resolve_device
 
-from . import evaluate as ev
-from .dataset import build_datasets
+from crypto.utils.dataset import build_datasets
+from crypto.utils.evaluate import run_test
 from .diffusion import Diffusion
 from .model import JointDiffusion, count_parameters
 
@@ -210,7 +210,7 @@ def main() -> None:
 
     ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
-    ev.run_test(model, test_ds, config, device)
+    run_test(model, test_ds, config, device)
 
 
 if __name__ == "__main__":
