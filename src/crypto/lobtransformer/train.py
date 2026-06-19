@@ -1,9 +1,9 @@
-"""Training entry point for the TimesFM direction classifier.
+"""Training entry point for LOBTransformer.
 
 Loss = CrossEntropy(logits, label).
 Usage::
 
-    uv run python -m crypto.timesfm.train configs/crypto/timesfm/ofi.json
+    uv run python -m crypto.lobtransformer.train configs/crypto/lobtransformer/btcusdt_ofi.json
 """
 
 from __future__ import annotations
@@ -20,14 +20,14 @@ from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from crypto.utils.training import build_cosine_schedule, resolve_device
-
 from crypto.utils.dataset import build_datasets
 from crypto.utils.evaluate import run_test
-from .model import TimesFMClassifier, count_parameters
+from crypto.utils.training import build_cosine_schedule, resolve_device
+
+from .model import LOBTransformer, count_parameters
 
 
-def train_one_epoch(model, loader, optimizer, scheduler, device):
+def _train_epoch(model, loader, optimizer, scheduler, device):
     model.train()
     total, n = 0.0, 0
     for batch in loader:
@@ -45,7 +45,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, device):
 
 
 @torch.no_grad()
-def validate(model, loader, device):
+def _validate(model, loader, device):
     model.eval()
     ce_total, correct, n = 0.0, 0, 0
     for batch in loader:
@@ -58,9 +58,9 @@ def validate(model, loader, device):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train Penny TimesFM classifier.")
+    parser = argparse.ArgumentParser(description="Train LOBTransformer on Binance LOB data.")
     parser.add_argument(
-        "config", nargs="?", default="configs/crypto/timesfm/btcusdt_ofi.json"
+        "config", nargs="?", default="configs/crypto/lobtransformer/btcusdt_ofi.json"
     )
     args = parser.parse_args()
     config_path = Path(args.config)
@@ -73,7 +73,7 @@ def main() -> None:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     ckpt_dir = (
         Path(config["checkpoint_dir"])
-        / f"timesfm_{config['symbol']}_{config['feature_mode']}_{stamp}"
+        / f"lobtransformer_{config['symbol']}_{config['feature_mode']}_{stamp}"
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     logger.add(ckpt_dir / "train.log", level="DEBUG")
@@ -83,7 +83,9 @@ def main() -> None:
 
     cb = meta["class_balance"]
     logger.info(
-        "TimesFM — symbol={} feature_mode={}", config["symbol"], config["feature_mode"]
+        "LOBTransformer — symbol={} feature_mode={}",
+        config["symbol"],
+        config["feature_mode"],
     )
     logger.info("  snapshots : {:,}", meta["n_snapshots"])
     logger.info(
@@ -101,7 +103,7 @@ def main() -> None:
     )
     logger.info("  features  : {}", meta["n_features"])
 
-    model = TimesFMClassifier(config).to(device)
+    model = LOBTransformer(config).to(device)
     logger.info(
         "  params    : ~{:.2f}M  |  device {}",
         count_parameters(model) / 1e6,
@@ -120,21 +122,16 @@ def main() -> None:
         val_ds, batch_size=config["batch_size"], shuffle=False, num_workers=0
     )
     total_steps = max(config["epochs"] * len(train_loader), 1)
-    optimizer = AdamW(
-        model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
-    )
+    optimizer = AdamW(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
     scheduler = build_cosine_schedule(optimizer, config, total_steps)
 
     best_val_ce, patience, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
-        train_ce = train_one_epoch(model, train_loader, optimizer, scheduler, device)
-        val_ce, val_acc = validate(model, val_loader, device)
+        train_ce = _train_epoch(model, train_loader, optimizer, scheduler, device)
+        val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
             "epoch {} | train ce={:.4f} | val ce={:.4f} acc={:.4f}",
-            epoch,
-            train_ce,
-            val_ce,
-            val_acc,
+            epoch, train_ce, val_ce, val_acc,
         )
         history.append(
             {"epoch": epoch, "train_ce": train_ce, "val_ce": val_ce, "val_acc": val_acc}
@@ -142,12 +139,7 @@ def main() -> None:
         if val_ce < best_val_ce:
             best_val_ce, patience = val_ce, 0
             torch.save(
-                {
-                    "model": model.state_dict(),
-                    "config": config,
-                    "alpha": alpha,
-                    "epoch": epoch,
-                },
+                {"model": model.state_dict(), "config": config, "alpha": alpha, "epoch": epoch},
                 ckpt_dir / "best.pt",
             )
             logger.info("  -> checkpoint saved (val ce {:.4f})", best_val_ce)

@@ -1,4 +1,4 @@
-"""TimesFM classifier: transformer over a pre-normalised LOB feature window.
+"""LOBTransformer: transformer classifier over a pre-normalised LOB feature window.
 
 Input : ``x`` ``(B, 1, T_past, F)`` — same format as DeepLOB / JointDiffusion.
 Output: ``(B, 3)`` class logits  (0=down, 1=stationary, 2=up).
@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 
-class TimesFMClassifier(nn.Module):
+class LOBTransformer(nn.Module):
     """Transformer classifier over a windowed LOB feature matrix."""
 
     family = "classifier"
@@ -22,9 +22,9 @@ class TimesFMClassifier(nn.Module):
         super().__init__()
         self.t_past = config["T_past"]
         n_features = config["n_features"]
-        d = config.get("timesfm_hidden", 256)
-        heads = config.get("timesfm_heads", 8)
-        layers = config.get("timesfm_layers", 4)
+        d = config.get("lobt_hidden", 256)
+        heads = config.get("lobt_heads", 8)
+        layers = config.get("lobt_layers", 4)
 
         self.input_proj = nn.Linear(n_features, d)
         self.pos = nn.Parameter(torch.randn(1, self.t_past, d) * 0.02)

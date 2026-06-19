@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=penny-timesfm-lob
+#SBATCH --job-name=penny-lobtransformer-lob
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "$ROOT_DIR"
 
-echo "Penny TimesFM LOB | host=$(hostname) | start=$(date)"
+echo "Penny LOBTransformer LOB | host=$(hostname) | start=$(date)"
 
 if command -v module >/dev/null 2>&1; then
   module purge || true
@@ -22,7 +22,7 @@ if [[ -n "${VENV_PATH:-}" ]]; then
   source "$VENV_PATH/bin/activate"
 fi
 
-CONFIG="${CONFIG:-configs/crypto/timesfm/btcusdt_lob.json}"
-uv run python -m crypto.timesfm.train "$CONFIG"
+CONFIG="${CONFIG:-configs/crypto/lobtransformer/btcusdt_lob.json}"
+uv run python -m crypto.lobtransformer.train "$CONFIG"
 
 echo "done: $(date)"

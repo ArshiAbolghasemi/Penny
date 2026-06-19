@@ -2,7 +2,7 @@
 
 Every model in this repo exposes ``model.predict(batch, device) → (B, 3) logits``
 so the metrics (accuracy, macro-F1, confusion, mean probs) are identical across
-DeepLOB, JointDiffusion, TimesFM, etc.  Import and use ``run_test`` from here
+DeepLOB, JointDiffusion, LOBTransformer, etc.  Import and use ``run_test`` from here
 rather than defining it per-family.
 """
 

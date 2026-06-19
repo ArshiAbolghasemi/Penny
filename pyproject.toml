@@ -50,7 +50,7 @@ mps = [
 [project.scripts]
 penny-deeplob   = "crypto.deeplob.train:main"
 penny-jointdiff = "crypto.jointdiff.train:main"
-penny-timesfm   = "crypto.timesfm.train:main"
+penny-lobtransformer = "crypto.lobtransformer.train:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/crypto"]
