@@ -8,7 +8,7 @@
   "feature_mode": "lob",
 
   "T_past": 100,
-  "label_k": 5,
+  "label_k": 50,
   "label_alpha": -1,
 
   "train_frac": 0.70,

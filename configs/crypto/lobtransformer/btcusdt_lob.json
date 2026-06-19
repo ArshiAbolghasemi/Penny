@@ -5,7 +5,7 @@
   "data_dir": "data/binance",
   "n_lob_levels": 10,
   "T_past": 100,
-  "label_k": 10,
+  "label_k": 50,
   "train_frac": 0.70,
   "val_frac": 0.15,
   "stride": 1,
