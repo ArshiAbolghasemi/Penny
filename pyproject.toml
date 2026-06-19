@@ -9,6 +9,7 @@ description = "LOB direction forecasting: DeepLOB, JointDiffusion, and LOBTransf
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "diffusers>=0.32.0",
     "dvc[s3]>=3.56.0",
     "loguru>=0.7.3",
     "numpy>=1.26.0,<3.0.0",

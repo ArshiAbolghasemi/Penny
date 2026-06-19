@@ -29,21 +29,21 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+from diffusers import DDPMScheduler
 from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from crypto.utils.training import build_cosine_schedule, resolve_device
-
 from crypto.utils.dataset import build_datasets
 from crypto.utils.evaluate import run_test
-from .diffusion import Diffusion
+from crypto.utils.training import build_cosine_schedule, resolve_device
+
 from .model import JointDiffusion, count_parameters
 
 
-def _train_epoch(model, diffusion, loader, optimizer, scheduler, config, device):
+def _train_epoch(model, scheduler, loader, optimizer, lr_scheduler, config, device):
     model.train()
-    t_max = diffusion.T_max
+    t_max = scheduler.config.num_train_timesteps
     lam = config.get("lambda_trend", 1.0)
     grad_clip = config.get("grad_clip", 1.0)
     tot = dif = trd = 0.0
@@ -55,7 +55,7 @@ def _train_epoch(model, diffusion, loader, optimizer, scheduler, config, device)
 
         t = torch.randint(0, t_max, (b,), device=device)
         noise = torch.randn_like(x0)
-        x_t = diffusion.q_sample(x0, t, noise)
+        x_t = scheduler.add_noise(x0, noise, t)
 
         eps_hat, logits = model(x_t, t)
         diff_loss = F.mse_loss(eps_hat, noise)
@@ -70,7 +70,7 @@ def _train_epoch(model, diffusion, loader, optimizer, scheduler, config, device)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
-        scheduler.step()
+        lr_scheduler.step()
 
         tot += loss.item()
         dif += diff_loss.item()
@@ -82,7 +82,7 @@ def _train_epoch(model, diffusion, loader, optimizer, scheduler, config, device)
 
 @torch.no_grad()
 def _validate(model, loader, device):
-    """Validate on the *classification* objective at t=0 (the inference setting)."""
+    """Validate on the classification objective at t=0 (the inference setting)."""
     model.eval()
     ce_total, correct, n = 0.0, 0, 0
     for batch in loader:
@@ -143,7 +143,20 @@ def main() -> None:
     )
     logger.info("  features  : {}", meta["n_features"])
 
-    diffusion = Diffusion(config, device)
+    scheduler = DDPMScheduler(
+        num_train_timesteps=config.get("T_max", 1000),
+        beta_start=config.get("beta_start", 1e-4),
+        beta_end=config.get("beta_end", 0.02),
+        beta_schedule="linear",
+        clip_sample=False,
+    )
+    logger.info(
+        "  diffusion : T_max={} beta=[{:.5f},{:.5f}]",
+        scheduler.config.num_train_timesteps,
+        scheduler.betas[0].item(),
+        scheduler.betas[-1].item(),
+    )
+
     model = JointDiffusion(config).to(device)
     logger.info(
         "  params    : ~{:.2f}M  |  lambda_trend={}  |  device {}",
@@ -168,12 +181,12 @@ def main() -> None:
         model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
     )
     total_steps = config["epochs"] * len(train_loader)
-    scheduler = build_cosine_schedule(optimizer, config, total_steps)
+    lr_scheduler = build_cosine_schedule(optimizer, config, total_steps)
 
     best_val_ce, patience_count, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
         tr = _train_epoch(
-            model, diffusion, train_loader, optimizer, scheduler, config, device
+            model, scheduler, train_loader, optimizer, lr_scheduler, config, device
         )
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
