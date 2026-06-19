@@ -1,7 +1,7 @@
-"""Training entry point for the CSDI price-direction forecaster.
+"""Training entry point for the CSDI direction classifier.
 
-Custom loss = future mid-return MSE (price prediction) + DeepLOB trend
-cross-entropy.  Usage::
+Loss = CrossEntropy(logits, label).
+Usage::
 
     uv run python -m csdi.train configs/csdi/ofi.json
 """
@@ -23,9 +23,8 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from . import evaluate as ev
-from . import labels as lab
 from .dataset import build_datasets
-from .model import CSDIForecastModel, TrendHead, count_parameters
+from .model import CSDIClassifier, count_parameters
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -43,11 +42,9 @@ def resolve_device(requested: str) -> torch.device:
     return torch.device(requested)
 
 
-def build_optimizer_scheduler(model, trend_head, config, total_steps):
+def build_optimizer_scheduler(model, config, total_steps):
     optimizer = AdamW(
-        list(model.parameters()) + list(trend_head.parameters()),
-        lr=config["lr"],
-        weight_decay=config["weight_decay"],
+        model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
     )
     warmup = config["warmup_steps"]
 
@@ -60,85 +57,38 @@ def build_optimizer_scheduler(model, trend_head, config, total_steps):
     return optimizer, LambdaLR(optimizer, lr_lambda)
 
 
-def _step(model, trend_head, batch, config, device):
-    t_past, k = config["T_past"], config["label_k"]
-    true_mid = batch["true_mid"].to(device).float()
-    boundary = true_mid[:, t_past - 1]
-    target_ret = true_mid[:, t_past:] / boundary.view(-1, 1) - 1.0
-    bwd = batch["bwd_smoothed"].to(device).float()
-    label = batch["label"].to(device)
-
-    pred_ret = model.forecast(batch, device)
-    price_loss = F.mse_loss(pred_ret, target_ret)
-    fut_mid = boundary.view(-1, 1) * (1.0 + pred_ret)
-    l_pred = (fut_mid[:, :k].mean(dim=1) - bwd) / (bwd + 1e-12)
-    trend_loss = F.cross_entropy(trend_head(l_pred), label)
-    return price_loss, trend_loss
-
-
-def train_one_epoch(model, trend_head, loader, optimizer, scheduler, config, device):
+def train_one_epoch(model, loader, optimizer, scheduler, device):
     model.train()
-    trend_head.train()
-    lam = config["lambda_trend"]
-    tot = obj = trd = 0.0
-    n = 0
-    for batch in loader:
-        price_loss, trend_loss = _step(model, trend_head, batch, config, device)
-        loss = price_loss + lam * trend_loss
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            list(model.parameters()) + list(trend_head.parameters()),
-            config["grad_clip"],
-        )
-        optimizer.step()
-        scheduler.step()
-        tot += loss.item()
-        obj += price_loss.item()
-        trd += trend_loss.item()
-        n += 1
-    n = max(n, 1)
-    return {"total": tot / n, "obj": obj / n, "trend": trd / n}
-
-
-@torch.no_grad()
-def validate_objective(model, loader, config, device):
-    model.eval()
-    t_past = config["T_past"]
     total, n = 0.0, 0
     for batch in loader:
-        true_mid = batch["true_mid"].to(device).float()
-        boundary = true_mid[:, t_past - 1]
-        target_ret = true_mid[:, t_past:] / boundary.view(-1, 1) - 1.0
-        pred_ret = model.forecast(batch, device)
-        total += F.mse_loss(pred_ret, target_ret).item()
+        label = batch["label"].to(device)
+        logits = model.predict(batch, device)
+        loss = F.cross_entropy(logits, label)
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        scheduler.step()
+        total += loss.item()
         n += 1
     return total / max(n, 1)
 
 
 @torch.no_grad()
-def validate_label_accuracy(model, loader, config, alpha, device):
+def validate(model, loader, device):
     model.eval()
-    t_past, k = config["T_past"], config["label_k"]
-    correct = total = 0
+    ce_total, correct, n = 0.0, 0, 0
     for batch in loader:
-        true_mid = batch["true_mid"].to(device).float()
-        boundary = true_mid[:, t_past - 1]
-        pred_ret = model.forecast(batch, device)
-        fut_mid = boundary.view(-1, 1) * (1.0 + pred_ret)
-        bwd = batch["bwd_smoothed"].to(device).float()
-        l_pred = ((fut_mid[:, :k].mean(dim=1) - bwd) / (bwd + 1e-12)).cpu().numpy()
-        labels = batch["label"].numpy()
-        for lv, true in zip(l_pred, labels):
-            correct += int(lab.label_from_l(float(lv), alpha) == true)
-            total += 1
-    acc = correct / max(total, 1)
-    logger.info("val label acc={:.4f} on {} windows", acc, total)
-    return acc
+        label = batch["label"].to(device)
+        logits = model.predict(batch, device)
+        ce_total += F.cross_entropy(logits, label).item()
+        correct += (logits.argmax(dim=1) == label).sum().item()
+        n += len(label)
+    return ce_total / max(len(loader), 1), correct / max(n, 1)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train Penny CSDI forecaster.")
+    parser = argparse.ArgumentParser(description="Train Penny CSDI classifier.")
     parser.add_argument("config", nargs="?", default="configs/csdi/ofi.json")
     args = parser.parse_args()
     config_path = Path(args.config)
@@ -156,10 +106,9 @@ def main() -> None:
     logger.add(ckpt_dir / "train.log", level="DEBUG")
 
     train_ds, val_ds, test_ds, normalizer, alpha, meta = build_datasets(config)
-    model = CSDIForecastModel(config).to(device)
-    trend_head = TrendHead().to(device)
+    model = CSDIClassifier(config).to(device)
     cb = meta["class_balance"]
-    logger.info("CSDI forecaster — feature_mode={}", config["feature_mode"])
+    logger.info("CSDI classifier — feature_mode={}", config["feature_mode"])
     logger.info(
         "  splits      : train={} val={} test={}",
         meta["counts"]["train"],
@@ -180,33 +129,27 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=config["batch_size"], shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
     total_steps = max(config["epochs"] * len(train_loader), 1)
-    optimizer, scheduler = build_optimizer_scheduler(
-        model, trend_head, config, total_steps
-    )
+    optimizer, scheduler = build_optimizer_scheduler(model, config, total_steps)
 
-    best_val, patience, history = float("inf"), 0, []
+    best_val_ce, patience, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
-        tr = train_one_epoch(
-            model, trend_head, train_loader, optimizer, scheduler, config, device
-        )
-        val_obj = validate_objective(model, val_loader, config, device)
-        val_acc = validate_label_accuracy(model, val_loader, config, alpha, device)
+        train_ce = train_one_epoch(model, train_loader, optimizer, scheduler, device)
+        val_ce, val_acc = validate(model, val_loader, device)
         logger.info(
-            "epoch {} | train total={:.6f} price={:.6f} trend={:.5f} | val price={:.6f} acc={:.4f}",
+            "epoch {} | train ce={:.4f} | val ce={:.4f} acc={:.4f}",
             epoch,
-            tr["total"],
-            tr["obj"],
-            tr["trend"],
-            val_obj,
+            train_ce,
+            val_ce,
             val_acc,
         )
-        history.append({"epoch": epoch, **tr, "val_obj": val_obj, "val_acc": val_acc})
-        if val_obj < best_val:
-            best_val, patience = val_obj, 0
+        history.append(
+            {"epoch": epoch, "train_ce": train_ce, "val_ce": val_ce, "val_acc": val_acc}
+        )
+        if val_ce < best_val_ce:
+            best_val_ce, patience = val_ce, 0
             torch.save(
                 {
                     "model": model.state_dict(),
-                    "trend_head": trend_head.state_dict(),
                     "config": config,
                     "normalizer": normalizer.to_dict(),
                     "alpha": alpha,
@@ -214,7 +157,7 @@ def main() -> None:
                 },
                 ckpt_dir / "best.pt",
             )
-            logger.info("saved checkpoint (val price {:.6f})", best_val)
+            logger.info("saved checkpoint (val ce {:.4f})", best_val_ce)
         else:
             patience += 1
             if patience >= config["patience"]:
@@ -225,7 +168,7 @@ def main() -> None:
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
     ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
-    ev.run_test(model, test_ds, config, alpha, device)
+    ev.run_test(model, test_ds, config, device)
 
 
 if __name__ == "__main__":

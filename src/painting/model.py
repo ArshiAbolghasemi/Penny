@@ -45,7 +45,9 @@ class UNetInpaintModel(nn.Module):
         self.norm = normalizer
         self.level_starts = np.asarray(level_starts)
         model_id = config["pretrained_model_id"]
-        logger.info("loading pretrained UNet '{}' (adapting 3->5 in, 3->2 out)", model_id)
+        logger.info(
+            "loading pretrained UNet '{}' (adapting 3->5 in, 3->2 out)", model_id
+        )
         self.unet = UNet2DModel.from_pretrained(
             model_id,
             in_channels=5,

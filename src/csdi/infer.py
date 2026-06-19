@@ -1,4 +1,4 @@
-"""Inference for the CSDI forecaster (spec section 8).
+"""Inference for the CSDI direction classifier.
 
 Usage::
 
@@ -13,11 +13,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from loguru import logger
 
 from . import features as feat
-from . import labels as lab
-from .model import CSDIForecastModel
+from .model import CSDIClassifier
 
 CLASS_NAMES = {0: "down", 1: "stationary", 2: "up"}
 
@@ -41,29 +41,23 @@ def predict(checkpoint_dir, past_orderbook, trades=None, device="cpu"):
     )
     config = ckpt["config"]
     normalizer = feat.RollingNormalizer.from_dict(config, ckpt["normalizer"])
-    model = CSDIForecastModel(config).to(dev)
+    model = CSDIClassifier(config).to(dev)
     model.load_state_dict(ckpt["model"])
     model.eval()
-    alpha = float(ckpt["alpha"])
-    t_past, k = config["T_past"], config["label_k"]
+    t_past = config["T_past"]
 
     window = past_orderbook.iloc[-t_past:].reset_index(drop=True)
     rows = feat.build_global_rows(window, trades, config)
-    rows_norm = normalizer.transform(rows)  # (T_past, R, 2)
+    rows_norm = normalizer.transform(rows)
     past = torch.from_numpy(np.transpose(rows_norm, (2, 1, 0)).copy()).unsqueeze(0)
 
-    mid = feat.mid_series(window)
-    boundary = float(mid[t_past - 1])
-    bwd = float(np.mean(mid[t_past - k : t_past]))
-    pred_ret = model.forecast({"past": past}, dev)
-    fut_mid = boundary * (1.0 + pred_ret)
-    l_val = float((fut_mid[:, :k].mean() - bwd) / (bwd + 1e-12))
-    label = lab.label_from_l(l_val, alpha)
+    logits = model.predict({"past": past}, dev)
+    probs = F.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+    label = int(probs.argmax())
     return {
         "label": label,
         "label_name": CLASS_NAMES[label],
-        "mean_l": l_val,
-        "future_mid_mean": fut_mid[0].cpu().numpy(),
+        "probs": {"down": float(probs[0]), "stationary": float(probs[1]), "up": float(probs[2])},
     }
 
 
@@ -84,8 +78,8 @@ def main() -> None:
     trades = feat.load_trades(args.trades) if args.trades else None
     out = predict(args.checkpoint, ob, trades, args.device)
     print("Penny CSDI signal")
-    print(f"  label   : {out['label']} ({out['label_name']})")
-    print(f"  mean l  : {out['mean_l']:.6f}")
+    print(f"  label  : {out['label']} ({out['label_name']})")
+    print(f"  probs  : down={out['probs']['down']:.3f}  stat={out['probs']['stationary']:.3f}  up={out['probs']['up']:.3f}")
 
 
 if __name__ == "__main__":

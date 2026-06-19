@@ -1,4 +1,4 @@
-"""Inference for the TimesFM forecaster (spec section 8).
+"""Inference for the TimesFM direction classifier.
 
 Usage::
 
@@ -13,11 +13,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from loguru import logger
 
 from . import features as feat
-from . import labels as lab
-from .model import TimesFMForecastModel
+from .model import TimesFMClassifier
 
 CLASS_NAMES = {0: "down", 1: "stationary", 2: "up"}
 
@@ -34,32 +34,55 @@ def _resolve_device(requested: str) -> torch.device:
 
 
 @torch.no_grad()
-def predict(checkpoint_dir, past_orderbook, device="cpu"):
+def predict(checkpoint_dir, orderbook_df, device="cpu"):
+    """Return direction prediction from a past orderbook window.
+
+    Args:
+        checkpoint_dir: Path to directory containing ``best.pt``.
+        orderbook_df: DataFrame with LOB columns (already loaded).
+        device: Device string.
+
+    Returns:
+        dict with keys ``label`` (int), ``label_name`` (str),
+        ``probs`` (dict with down/stationary/up floats).
+    """
     dev = _resolve_device(device)
     ckpt = torch.load(
         Path(checkpoint_dir) / "best.pt", map_location=dev, weights_only=False
     )
     config = ckpt["config"]
-    model = TimesFMForecastModel(config).to(dev)
+    ofi_stats = ckpt.get("ofi_stats")
+    use_ofi = config.get("feature_mode", "ofi") == "ofi"
+
+    model = TimesFMClassifier(config).to(dev)
     model.load_state_dict(ckpt["model"])
     model.eval()
-    alpha = float(ckpt["alpha"])
-    t_past, k = config["T_past"], config["label_k"]
 
-    window = past_orderbook.iloc[-t_past:].reset_index(drop=True)
+    t_past = config["T_past"]
+    window = orderbook_df.iloc[-t_past:].reset_index(drop=True)
+
     mid = feat.mid_series(window).astype(np.float32)
-    true_mid = torch.from_numpy(mid).unsqueeze(0)
-    bwd = float(np.mean(mid[t_past - k : t_past]))
-    boundary = float(mid[t_past - 1])
-    pred_ret = model.forecast({"true_mid": true_mid}, dev)
-    fut_mid = boundary * (1.0 + pred_ret)
-    l_val = float((fut_mid[:, :k].mean() - bwd) / (bwd + 1e-12))
-    label = lab.label_from_l(l_val, alpha)
+    past_mid = torch.from_numpy(mid).unsqueeze(0)  # (1, T_past)
+
+    batch = {"past_mid": past_mid}
+    if use_ofi:
+        if ofi_stats is None:
+            raise RuntimeError("OFI mode requires ofi_stats in checkpoint")
+        raw_ofi = feat.net_ofi_series(window).astype(np.float32)
+        ofi_norm = (raw_ofi - ofi_stats["mean"]) / max(ofi_stats["std"], 1e-8)
+        batch["past_ofi"] = torch.from_numpy(ofi_norm).unsqueeze(0)  # (1, T_past)
+
+    logits = model.predict(batch, dev)
+    probs = F.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+    label = int(probs.argmax())
     return {
         "label": label,
         "label_name": CLASS_NAMES[label],
-        "mean_l": l_val,
-        "future_mid_mean": fut_mid[0].cpu().numpy(),
+        "probs": {
+            "down": float(probs[0]),
+            "stationary": float(probs[1]),
+            "up": float(probs[2]),
+        },
     }
 
 
@@ -70,16 +93,22 @@ def main() -> None:
     p.add_argument("--index", type=int, default=-1)
     p.add_argument("--device", default="cpu")
     args = p.parse_args()
+
     ckpt = torch.load(
         Path(args.checkpoint) / "best.pt", map_location="cpu", weights_only=False
     )
     ob = feat.load_orderbook(args.orderbook, ckpt["config"]["n_levels"])
     end = args.index if args.index >= 0 else len(ob)
     ob = ob.iloc[:end]
+
     out = predict(args.checkpoint, ob, args.device)
     print("Penny TimesFM signal")
-    print(f"  label   : {out['label']} ({out['label_name']})")
-    print(f"  mean l  : {out['mean_l']:.6f}")
+    print(f"  label  : {out['label']} ({out['label_name']})")
+    print(
+        f"  probs  : down={out['probs']['down']:.3f}"
+        f"  stat={out['probs']['stationary']:.3f}"
+        f"  up={out['probs']['up']:.3f}"
+    )
 
 
 if __name__ == "__main__":
