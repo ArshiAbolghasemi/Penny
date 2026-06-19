@@ -33,6 +33,10 @@ cu129 = [
     "torch==2.8.0",
     "torchvision==0.23.0",
 ]
+cu132 = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
 # Optional CPU-only extra for local development or non-GPU nodes.
 cpu = [
     "torch==2.8.0",
