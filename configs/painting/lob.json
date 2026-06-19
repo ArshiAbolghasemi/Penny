@@ -11,7 +11,7 @@
   "snapshot_interval_sec": 10,
   "train_frac": 0.70,
   "val_frac": 0.15,
-  "stride": 30,
+  "stride": 5,
   "norm_window_snapshots": 8640,
   "clip_percentile": 0.95,
   "n_trade_rows": 3,
