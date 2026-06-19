@@ -42,6 +42,7 @@ Raw data lives under `data/binance/` and is tracked by DVC. Each calendar day pr
 Pull data with DVC:
 
 ```bash
+# Credentials are needed — contact the team for access
 uv run dvc pull
 ```
 
