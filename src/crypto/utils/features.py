@@ -62,71 +62,79 @@ def extract_features(day_df: pd.DataFrame, config: dict) -> np.ndarray:
     Returns:
         float32 array of shape ``(N, n_features(config))``.
     """
-    n    = config["n_lob_levels"]
+    n = config["n_lob_levels"]
     mode = config.get("feature_mode", "ofi")
-    N    = len(day_df)
-    F    = n_features(config)
-    out  = np.zeros((N, F), dtype=np.float32)
-    eps  = 1e-12
+    N = len(day_df)
+    F = n_features(config)
+    out = np.zeros((N, F), dtype=np.float32)
+    eps = 1e-12
 
-    bid_p = np.stack([day_df[f"bids[{i}].price"].values  for i in range(n)], axis=1)
+    bid_p = np.stack([day_df[f"bids[{i}].price"].values for i in range(n)], axis=1)
     bid_v = np.stack([day_df[f"bids[{i}].amount"].values for i in range(n)], axis=1)
-    ask_p = np.stack([day_df[f"asks[{i}].price"].values  for i in range(n)], axis=1)
+    ask_p = np.stack([day_df[f"asks[{i}].price"].values for i in range(n)], axis=1)
     ask_v = np.stack([day_df[f"asks[{i}].amount"].values for i in range(n)], axis=1)
-    mid   = day_df["mid"].values.astype(np.float64)
+    mid = day_df["mid"].values.astype(np.float64)
 
     col = 0
 
     if mode == "ofi":
         for i in range(n):
-            prev_bp = np.roll(bid_p[:, i], 1); prev_bp[0] = bid_p[0, i]
-            prev_bv = np.roll(bid_v[:, i], 1); prev_bv[0] = bid_v[0, i]
+            prev_bp = np.roll(bid_p[:, i], 1)
+            prev_bp[0] = bid_p[0, i]
+            prev_bv = np.roll(bid_v[:, i], 1)
+            prev_bv[0] = bid_v[0, i]
             dp_b = bid_p[:, i] - prev_bp
             bofi = np.where(
-                dp_b > 0, bid_v[:, i],
+                dp_b > 0,
+                bid_v[:, i],
                 np.where(dp_b < 0, -prev_bv, bid_v[:, i] - prev_bv),
             )
             bofi[0] = 0.0
 
-            prev_ap = np.roll(ask_p[:, i], 1); prev_ap[0] = ask_p[0, i]
-            prev_av = np.roll(ask_v[:, i], 1); prev_av[0] = ask_v[0, i]
+            prev_ap = np.roll(ask_p[:, i], 1)
+            prev_ap[0] = ask_p[0, i]
+            prev_av = np.roll(ask_v[:, i], 1)
+            prev_av[0] = ask_v[0, i]
             dp_a = ask_p[:, i] - prev_ap
             aofi = np.where(
-                dp_a < 0, ask_v[:, i],
+                dp_a < 0,
+                ask_v[:, i],
                 np.where(dp_a > 0, -prev_av, ask_v[:, i] - prev_av),
             )
             aofi[0] = 0.0
 
-            out[:, col]     = _signed_log(bofi).astype(np.float32)
+            out[:, col] = _signed_log(bofi).astype(np.float32)
             out[:, col + 1] = _signed_log(aofi).astype(np.float32)
             col += 2
     else:  # lob
         for i in range(n):
-            out[:, i]           = ((mid - bid_p[:, i]) / (mid + eps)).astype(np.float32)
-            out[:, n + i]       = ((ask_p[:, i] - mid) / (mid + eps)).astype(np.float32)
-            out[:, 2 * n + i]   = np.log1p(bid_v[:, i]).astype(np.float32)
-            out[:, 3 * n + i]   = np.log1p(ask_v[:, i]).astype(np.float32)
+            out[:, i] = ((mid - bid_p[:, i]) / (mid + eps)).astype(np.float32)
+            out[:, n + i] = ((ask_p[:, i] - mid) / (mid + eps)).astype(np.float32)
+            out[:, 2 * n + i] = np.log1p(bid_v[:, i]).astype(np.float32)
+            out[:, 3 * n + i] = np.log1p(ask_v[:, i]).astype(np.float32)
         col = 4 * n
 
     # ── Microstructure (3) ────────────────────────────────────────────────────
     spread_norm = day_df["spread"].values / (mid + eps)
-    total_bid   = bid_v.sum(axis=1)
-    total_ask   = ask_v.sum(axis=1)
-    log_dimbal  = np.log((total_bid + 1e-8) / (total_ask + 1e-8))
+    total_bid = bid_v.sum(axis=1)
+    total_ask = ask_v.sum(axis=1)
+    log_dimbal = np.log((total_bid + 1e-8) / (total_ask + 1e-8))
 
-    prev_mid  = np.roll(mid, 1); prev_mid[0] = mid[0]
-    log_ret   = np.log((mid + eps) / (prev_mid + eps)); log_ret[0] = 0.0
+    prev_mid = np.roll(mid, 1)
+    prev_mid[0] = mid[0]
+    log_ret = np.log((mid + eps) / (prev_mid + eps))
+    log_ret[0] = 0.0
 
-    out[:, col]     = spread_norm.astype(np.float32)
+    out[:, col] = spread_norm.astype(np.float32)
     out[:, col + 1] = log_dimbal.astype(np.float32)
     out[:, col + 2] = log_ret.astype(np.float32)
     col += 3
 
     # ── Trade features (5) ────────────────────────────────────────────────────
-    buy_v   = day_df["buy_vol"].fillna(0.0).values
-    sell_v  = day_df["sell_vol"].fillna(0.0).values
-    cnt     = day_df["trade_count"].fillna(0.0).values
-    vwap    = day_df["vwap"].values
+    buy_v = day_df["buy_vol"].fillna(0.0).values
+    sell_v = day_df["sell_vol"].fillna(0.0).values
+    cnt = day_df["trade_count"].fillna(0.0).values
+    vwap = day_df["vwap"].values
     total_t = buy_v + sell_v
     t_imbal = (buy_v - sell_v) / (total_t + 1e-8)
     vwap_dev = np.where(
@@ -135,7 +143,7 @@ def extract_features(day_df: pd.DataFrame, config: dict) -> np.ndarray:
         0.0,
     )
 
-    out[:, col]     = np.log1p(buy_v).astype(np.float32)
+    out[:, col] = np.log1p(buy_v).astype(np.float32)
     out[:, col + 1] = np.log1p(sell_v).astype(np.float32)
     out[:, col + 2] = t_imbal.astype(np.float32)
     out[:, col + 3] = np.log1p(cnt).astype(np.float32)
@@ -149,7 +157,7 @@ def extract_features(day_df: pd.DataFrame, config: dict) -> np.ndarray:
     #   log_n_quote_updates → log1p(trade_count)   (both reflect market activity)
     #   spread_mean_norm    → spread / mid          (already computed above)
     #   mid_range_norm      → |log_ret|             (inter-bin price movement proxy)
-    out[:, col]     = np.log1p(cnt).astype(np.float32)
+    out[:, col] = np.log1p(cnt).astype(np.float32)
     out[:, col + 1] = spread_norm.astype(np.float32)
     out[:, col + 2] = np.abs(log_ret).astype(np.float32)
 

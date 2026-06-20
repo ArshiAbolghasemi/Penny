@@ -84,38 +84,47 @@ def _resample_snapshot(path: Path, interval_s: int, n_levels: int) -> pd.DataFra
     result = df.drop(columns=["timestamp"]).groupby("bin").last().reset_index()
 
     if "bids[0].price" in result.columns and "asks[0].price" in result.columns:
-        result["mid"]    = (result["bids[0].price"] + result["asks[0].price"]) / 2.0
-        result["spread"] =  result["asks[0].price"] - result["bids[0].price"]
+        result["mid"] = (result["bids[0].price"] + result["asks[0].price"]) / 2.0
+        result["spread"] = result["asks[0].price"] - result["bids[0].price"]
     return result
 
 
 def _resample_trades(path: Path, interval_s: int) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(
-            columns=["bin", "trade_count", "buy_vol", "sell_vol", "vwap", "trade_imbalance"]
+            columns=[
+                "bin",
+                "trade_count",
+                "buy_vol",
+                "sell_vol",
+                "vwap",
+                "trade_imbalance",
+            ]
         )
     df = pd.read_csv(path, usecols=["timestamp", "side", "price", "amount"])
     df.dropna(inplace=True)
     if df.empty:
         return pd.DataFrame()
 
-    df["bin"]      = _bin_col(df["timestamp"].astype(np.int64), interval_s)
-    df["buy_vol"]  = np.where(df["side"] == "buy",  df["amount"], 0.0)
+    df["bin"] = _bin_col(df["timestamp"].astype(np.int64), interval_s)
+    df["buy_vol"] = np.where(df["side"] == "buy", df["amount"], 0.0)
     df["sell_vol"] = np.where(df["side"] == "sell", df["amount"], 0.0)
     df["vwap_num"] = df["price"] * df["amount"]
 
     agg = (
         df.groupby("bin")
         .agg(
-            trade_count=("amount",   "count"),
-            buy_vol    =("buy_vol",  "sum"),
-            sell_vol   =("sell_vol", "sum"),
-            vwap_num   =("vwap_num", "sum"),
-            total_vol  =("amount",   "sum"),
+            trade_count=("amount", "count"),
+            buy_vol=("buy_vol", "sum"),
+            sell_vol=("sell_vol", "sum"),
+            vwap_num=("vwap_num", "sum"),
+            total_vol=("amount", "sum"),
         )
         .reset_index()
     )
-    agg["vwap"] = np.where(agg["total_vol"] > 0, agg["vwap_num"] / agg["total_vol"], np.nan)
+    agg["vwap"] = np.where(
+        agg["total_vol"] > 0, agg["vwap_num"] / agg["total_vol"], np.nan
+    )
     denom = agg["buy_vol"] + agg["sell_vol"]
     agg["trade_imbalance"] = np.where(
         denom > 0, (agg["buy_vol"] - agg["sell_vol"]) / denom, np.nan
@@ -126,8 +135,13 @@ def _resample_trades(path: Path, interval_s: int) -> pd.DataFrame:
 def _resample_quotes(path: Path, interval_s: int) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(
-            columns=["bin", "quote_bid_price", "quote_ask_price",
-                     "quote_bid_amount", "quote_ask_amount"]
+            columns=[
+                "bin",
+                "quote_bid_price",
+                "quote_ask_price",
+                "quote_bid_amount",
+                "quote_ask_amount",
+            ]
         )
     df = pd.read_csv(
         path,
@@ -141,14 +155,17 @@ def _resample_quotes(path: Path, interval_s: int) -> pd.DataFrame:
     df["bin"] = _bin_col(df["timestamp"].astype(np.int64), interval_s)
     return (
         df.drop(columns=["timestamp"])
-        .groupby("bin").last()
+        .groupby("bin")
+        .last()
         .reset_index()
-        .rename(columns={
-            "bid_price":  "quote_bid_price",
-            "ask_price":  "quote_ask_price",
-            "bid_amount": "quote_bid_amount",
-            "ask_amount": "quote_ask_amount",
-        })
+        .rename(
+            columns={
+                "bid_price": "quote_bid_price",
+                "ask_price": "quote_ask_price",
+                "bid_amount": "quote_bid_amount",
+                "ask_amount": "quote_ask_amount",
+            }
+        )
     )
 
 
@@ -160,16 +177,23 @@ def _process_day(
 ) -> pd.DataFrame:
     snap = _resample_snapshot(
         data_dir / f"binance_book_snapshot_25_{date}_{symbol}.csv.gz",
-        interval_s, n_levels,
+        interval_s,
+        n_levels,
     )
     if snap.empty:
         return pd.DataFrame()
 
-    trades = _resample_trades(data_dir / f"binance_trades_{date}_{symbol}.csv.gz", interval_s)
-    quotes = _resample_quotes(data_dir / f"binance_quotes_{date}_{symbol}.csv.gz", interval_s)
+    trades = _resample_trades(
+        data_dir / f"binance_trades_{date}_{symbol}.csv.gz", interval_s
+    )
+    quotes = _resample_quotes(
+        data_dir / f"binance_quotes_{date}_{symbol}.csv.gz", interval_s
+    )
 
     df = snap.merge(trades, on="bin", how="left").merge(quotes, on="bin", how="left")
-    df.insert(0, "timestamp_utc", pd.to_datetime(df["bin"] // 1000, unit="ms", utc=True))
+    df.insert(
+        0, "timestamp_utc", pd.to_datetime(df["bin"] // 1000, unit="ms", utc=True)
+    )
     return df
 
 
@@ -180,29 +204,41 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Resample Binance data to fixed intervals, one file per symbol."
     )
-    parser.add_argument("--interval", type=int, default=10,
-                        help="Bin size in seconds (default: 10)")
-    parser.add_argument("--levels",   type=int, default=10,
-                        help="LOB depth levels to keep (default: 10)")
-    parser.add_argument("--date",     default=None,
-                        help="Process only this date YYYY-MM-DD (default: all)")
-    parser.add_argument("--data-dir", default=None,
-                        help="Raw CSV source directory (default: data/binance)")
-    parser.add_argument("--out-dir",  default=None,
-                        help="Output directory (default: data/resampled)")
+    parser.add_argument(
+        "--interval", type=int, default=10, help="Bin size in seconds (default: 10)"
+    )
+    parser.add_argument(
+        "--levels", type=int, default=10, help="LOB depth levels to keep (default: 10)"
+    )
+    parser.add_argument(
+        "--date", default=None, help="Process only this date YYYY-MM-DD (default: all)"
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Raw CSV source directory (default: data/binance)",
+    )
+    parser.add_argument(
+        "--out-dir", default=None, help="Output directory (default: data/resampled)"
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir) if args.data_dir else _ROOT / "data" / "binance"
-    out_dir  = Path(args.out_dir)  if args.out_dir  else _ROOT / "data" / "resampled"
+    out_dir = (
+        Path(args.out_dir) if args.out_dir else _ROOT / "data" / "resampled" / "binance"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     schedule = _discover(data_dir, args.date)
     if not schedule:
-        logger.error("No snapshot CSV files found in {}{}", data_dir,
-                     f" for {args.date}" if args.date else "")
+        logger.error(
+            "No snapshot CSV files found in {}{}",
+            data_dir,
+            f" for {args.date}" if args.date else "",
+        )
         sys.exit(1)
 
-    n_sym   = len(schedule)
+    n_sym = len(schedule)
     n_total = sum(len(dates) for dates in schedule.values())
     logger.info("Source  : {}", data_dir)
     logger.info("Symbols : {}  |  day×symbol pairs: {}", n_sym, n_total)
@@ -235,8 +271,13 @@ def main() -> None:
 
         combined.to_parquet(out_path, index=False, compression="gzip")
         size_mb = out_path.stat().st_size / 1e6
-        logger.info("  → {}  {:,} rows × {} cols  {:.1f} MB",
-                    out_path.name, len(combined), len(combined.columns), size_mb)
+        logger.info(
+            "  → {}  {:,} rows × {} cols  {:.1f} MB",
+            out_path.name,
+            len(combined),
+            len(combined.columns),
+            size_mb,
+        )
 
     # summary
     files = sorted(out_dir.glob("*.parquet.gz"))
@@ -246,7 +287,9 @@ def main() -> None:
     logger.info(sep)
     for f in files:
         df = pd.read_parquet(f, columns=["bin"])
-        logger.info("{:<20}  {:>10,}  {:>6.1f}", f.name, len(df), f.stat().st_size / 1e6)
+        logger.info(
+            "{:<20}  {:>10,}  {:>6.1f}", f.name, len(df), f.stat().st_size / 1e6
+        )
     logger.info(sep)
 
 

@@ -39,8 +39,8 @@ def _cache_paths(config: dict, tag: str) -> dict[str, Path]:
     prefix = cache / f"{sym}_n{n}_{mode}_{tag}"
     return {
         "feat": prefix.with_suffix(".feat.npy"),
-        "mid":  prefix.with_suffix(".mid.npy"),
-        "ts":   prefix.with_suffix(".ts.npy"),
+        "mid": prefix.with_suffix(".mid.npy"),
+        "ts": prefix.with_suffix(".ts.npy"),
     }
 
 
@@ -68,18 +68,23 @@ def build_cache(
 
     if all(p.exists() for p in paths.values()):
         mid = np.load(paths["mid"])
-        ts  = np.load(paths["ts"])
-        N   = len(mid)
+        ts = np.load(paths["ts"])
+        N = len(mid)
         feat = np.memmap(paths["feat"], dtype=np.float32, mode="r", shape=(N, F))
         logger.info("loaded cache '{}': {:,} rows, {} features", tag, N, F)
         return feat, mid, ts
 
-    symbol  = config["symbol"]
+    symbol = config["symbol"]
     parquet = Path(config["data_dir"]) / f"{symbol}.parquet.gz"
     if not parquet.exists():
+        script = (
+            "resample_nobitex.py"
+            if config.get("exchange") == "nobitex"
+            else "resample_binance.py"
+        )
         raise FileNotFoundError(
             f"Resampled parquet not found: {parquet}\n"
-            f"Run:  uv run python scripts/resample_binance.py"
+            f"Run:  uv run python scripts/{script}"
         )
 
     logger.info("building '{}' cache from {}", tag, parquet)
@@ -87,33 +92,33 @@ def build_cache(
     df["_date"] = df["timestamp_utc"].dt.date
 
     N_total = len(df)
-    feat_mm  = np.memmap(paths["feat"], dtype=np.float32, mode="w+", shape=(N_total, F))
-    mid_arr  = np.empty(N_total, dtype=np.float64)
-    ts_arr   = np.empty(N_total, dtype=np.int64)
+    feat_mm = np.memmap(paths["feat"], dtype=np.float32, mode="w+", shape=(N_total, F))
+    mid_arr = np.empty(N_total, dtype=np.float64)
+    ts_arr = np.empty(N_total, dtype=np.int64)
 
     ptr = 0
     for date, day_df in df.groupby("_date"):
         day_df = day_df.reset_index(drop=True)
-        N_day  = len(day_df)
+        N_day = len(day_df)
         logger.info("  {} — {} rows", date, N_day)
 
-        raw = extract_features_fn(day_df, config)   # (N_day, F) float32
+        raw = extract_features_fn(day_df, config)  # (N_day, F) float32
 
         day_mean = raw.mean(axis=0)
-        day_std  = raw.std(axis=0)
+        day_std = raw.std(axis=0)
         day_std[day_std < 1e-8] = 1.0
         norm = ((raw - day_mean) / day_std).astype(np.float32)
 
         feat_mm[ptr : ptr + N_day] = norm
         mid_arr[ptr : ptr + N_day] = day_df["mid"].values
-        ts_arr [ptr : ptr + N_day] = day_df["bin"].values.astype(np.int64)
+        ts_arr[ptr : ptr + N_day] = day_df["bin"].values.astype(np.int64)
         ptr += N_day
 
     feat_mm.flush()
     del feat_mm
 
     np.save(paths["mid"], mid_arr[:ptr])
-    np.save(paths["ts"],  ts_arr[:ptr])
+    np.save(paths["ts"], ts_arr[:ptr])
     logger.info("cache '{}' built: {:,} rows → {}", tag, ptr, paths["feat"])
 
     feat = np.memmap(paths["feat"], dtype=np.float32, mode="r", shape=(ptr, F))
