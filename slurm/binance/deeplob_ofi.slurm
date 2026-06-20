@@ -36,5 +36,5 @@ fi
 
 CONFIG="${CONFIG:-configs/crypto/binance/deeplob/btcusdt_ofi.json}"
 uv sync --extra "$UV_EXTRA"
-uv run python -m crypto.deeplob.train "$CONFIG"
+uv run python -m crypto.train_deeplob "$CONFIG"
 echo "done: $(date)"

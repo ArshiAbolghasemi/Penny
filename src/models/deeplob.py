@@ -3,20 +3,16 @@
 Based on: Zhang et al., "DeepLOB: Deep Convolutional Neural Networks for
 Limit Order Books", IEEE Transactions on Signal Processing, 2019.
 
-Input : ``(B, 1, T_past, n_features)`` — single-channel image, time on height,
-        features on width.
+Input : ``(B, 1, T_past, n_features)`` — single-channel image.
 Output: ``(B, 3)`` class logits  (0=down, 1=stationary, 2=up).
 
 Architecture
 ------------
-1. **Conv block** — (1×2) + (4×1) + (4×1) convolutions capture local feature
-   interactions and short temporal patterns.
-2. **Inception block** — three parallel paths with temporal kernel heights
-   (1, 3, 5) extract multi-scale structure, then are concatenated.
-3. **Feature pooling** — AdaptiveAvgPool collapses the feature (width) axis to 1,
-   giving a sequence of shape ``(B, T', C)`` ready for the LSTM.
-4. **LSTM** — models long-range temporal dependencies across T' steps.
-5. **Head** — dropout + linear → 3 logits.
+1. Conv block  — (1×2) + (4×1) + (4×1) convolutions.
+2. Inception   — three parallel temporal paths (k=1,3,5) concatenated.
+3. AvgPool     — collapses feature axis to 1.
+4. LSTM        — models long-range temporal dependencies.
+5. Head        — dropout + linear → 3 logits.
 """
 
 from __future__ import annotations
@@ -89,13 +85,12 @@ class DeepLOB(nn.Module):
         self.head = nn.Linear(lstm_h, 3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, 1, T, F)
         x = self.conv_block(x)  # (B, conv_f, T-6, F+1)
         x = self.inception(x)  # (B, 3*inc_f, T-6, F+1)
         x = self.feat_pool(x).squeeze(-1)  # (B, 3*inc_f, T-6)
         x = x.permute(0, 2, 1)  # (B, T-6, 3*inc_f)
-        _, (h, _) = self.lstm(x)  # h: (1, B, lstm_h)
-        return self.head(self.dropout(h.squeeze(0)))  # (B, 3)
+        _, (h, _) = self.lstm(x)
+        return self.head(self.dropout(h.squeeze(0)))
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         return self(batch["x"].to(device).float())

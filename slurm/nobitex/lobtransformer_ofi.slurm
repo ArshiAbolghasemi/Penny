@@ -36,5 +36,5 @@ fi
 
 CONFIG="${CONFIG:-configs/crypto/nobitex/lobtransformer/btcirt_ofi.json}"
 uv sync --extra "$UV_EXTRA"
-uv run python -m crypto.lobtransformer.train "$CONFIG"
+uv run python -m crypto.train_lobtransformer "$CONFIG"
 echo "done: $(date)"

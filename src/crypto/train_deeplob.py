@@ -1,9 +1,8 @@
-"""Training entry point for LOBTransformer.
+"""Train DeepLOB on crypto LOB data.
 
-Loss = CrossEntropy(logits, label).
 Usage::
 
-    uv run python -m crypto.lobtransformer.train configs/crypto/lobtransformer/btcusdt_ofi.json
+    uv run python -m crypto.train_deeplob configs/crypto/binance/deeplob/btcusdt_ofi.json
 """
 
 from __future__ import annotations
@@ -23,11 +22,10 @@ from torch.utils.data import DataLoader
 from crypto.utils.dataset import build_datasets
 from crypto.utils.evaluate import run_test
 from crypto.utils.training import build_cosine_schedule, resolve_device
+from models.deeplob import DeepLOB, count_parameters
 
-from .model import LOBTransformer, count_parameters
 
-
-def _train_epoch(model, loader, optimizer, scheduler, device):
+def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
     model.train()
     total, n = 0.0, 0
     for batch in loader:
@@ -36,7 +34,7 @@ def _train_epoch(model, loader, optimizer, scheduler, device):
         loss = F.cross_entropy(logits, label)
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         scheduler.step()
         total += loss.item()
@@ -47,24 +45,23 @@ def _train_epoch(model, loader, optimizer, scheduler, device):
 @torch.no_grad()
 def _validate(model, loader, device):
     model.eval()
-    ce_total, correct, n = 0.0, 0, 0
+    ce, correct, n = 0.0, 0, 0
     for batch in loader:
         label = batch["label"].to(device)
         logits = model.predict(batch, device)
-        ce_total += F.cross_entropy(logits, label).item()
-        correct += (logits.argmax(dim=1) == label).sum().item()
+        ce += F.cross_entropy(logits, label).item()
+        correct += (logits.argmax(1) == label).sum().item()
         n += len(label)
-    return ce_total / max(len(loader), 1), correct / max(n, 1)
+    return ce / max(len(loader), 1), correct / max(n, 1)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Train LOBTransformer on Binance LOB data."
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
-        "config", nargs="?", default="configs/crypto/lobtransformer/btcusdt_ofi.json"
+        "config", nargs="?", default="configs/crypto/binance/deeplob/btcusdt_ofi.json"
     )
     args = parser.parse_args()
+
     config_path = Path(args.config)
     if not config_path.exists():
         logger.error("config not found: {}", config_path)
@@ -72,46 +69,34 @@ def main() -> None:
     config = json.loads(config_path.read_text())
 
     device = resolve_device(config["device"])
+    grad_clip = config.get("grad_clip", 1.0)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_dir = (
-        Path(config["checkpoint_dir"])
-        / f"lobtransformer_{config['symbol']}_{config['feature_mode']}_{stamp}"
-    )
+    ckpt_dir = Path(config["checkpoint_dir"]) / f"deeplob_{config['symbol']}_{stamp}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     logger.add(ckpt_dir / "train.log", level="DEBUG")
 
     train_ds, val_ds, test_ds, alpha, meta = build_datasets(config)
     config["n_features"] = meta["n_features"]
-
     cb = meta["class_balance"]
+
     logger.info(
-        "LOBTransformer — symbol={} feature_mode={}",
-        config["symbol"],
-        config["feature_mode"],
+        "DeepLOB  symbol={}  mode={}", config["symbol"], config.get("feature_mode")
     )
-    logger.info("  snapshots : {:,}", meta["n_snapshots"])
+    logger.info("  windows train={} val={} test={}", *meta["counts"].values())
     logger.info(
-        "  windows   : train={} val={} test={}",
-        meta["counts"]["train"],
-        meta["counts"]["val"],
-        meta["counts"]["test"],
-    )
-    logger.info("  alpha     : {:.6f}", alpha)
-    logger.info(
-        "  class bal : down={:.1%} stat={:.1%} up={:.1%}",
+        "  alpha={:.6f}  down={:.1%} flat={:.1%} up={:.1%}",
+        alpha,
         cb["down"],
         cb["stationary"],
         cb["up"],
     )
-    logger.info("  features  : {}", meta["n_features"])
-
-    model = LOBTransformer(config).to(device)
     logger.info(
-        "  params    : ~{:.2f}M  |  device {}",
-        count_parameters(model) / 1e6,
-        device,
+        "  features={}  params={:.2f}M",
+        meta["n_features"],
+        count_parameters(DeepLOB(config)) / 1e6,
     )
 
+    model = DeepLOB(config).to(device)
     nw = min(4, torch.get_num_threads())
     train_loader = DataLoader(
         train_ds,
@@ -120,31 +105,34 @@ def main() -> None:
         num_workers=nw,
         pin_memory=(device.type == "cuda"),
     )
-    val_loader = DataLoader(
-        val_ds, batch_size=config["batch_size"], shuffle=False, num_workers=0
-    )
-    total_steps = max(config["epochs"] * len(train_loader), 1)
+    val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
+
     optimizer = AdamW(
         model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
     )
-    scheduler = build_cosine_schedule(optimizer, config, total_steps)
+    scheduler = build_cosine_schedule(
+        optimizer, config, config["epochs"] * len(train_loader)
+    )
 
-    best_val_ce, patience, history = float("inf"), 0, []
+    best, patience, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
-        train_ce = _train_epoch(model, train_loader, optimizer, scheduler, device)
+        tr_ce = _train_epoch(
+            model, train_loader, optimizer, scheduler, device, grad_clip
+        )
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
-            "epoch {} | train ce={:.4f} | val ce={:.4f} acc={:.4f}",
+            "epoch {} | tr={:.4f} val_ce={:.4f} val_acc={:.4f}",
             epoch,
-            train_ce,
+            tr_ce,
             val_ce,
             val_acc,
         )
         history.append(
-            {"epoch": epoch, "train_ce": train_ce, "val_ce": val_ce, "val_acc": val_acc}
+            {"epoch": epoch, "train_ce": tr_ce, "val_ce": val_ce, "val_acc": val_acc}
         )
-        if val_ce < best_val_ce:
-            best_val_ce, patience = val_ce, 0
+
+        if val_ce < best:
+            best, patience = val_ce, 0
             torch.save(
                 {
                     "model": model.state_dict(),
@@ -154,7 +142,6 @@ def main() -> None:
                 },
                 ckpt_dir / "best.pt",
             )
-            logger.info("  -> checkpoint saved (val ce {:.4f})", best_val_ce)
         else:
             patience += 1
             if patience >= config["patience"]:

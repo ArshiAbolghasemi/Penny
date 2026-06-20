@@ -36,5 +36,5 @@ fi
 
 CONFIG="${CONFIG:-configs/crypto/nobitex/jointdiff/btcirt_lob.json}"
 uv sync --extra "$UV_EXTRA"
-uv run python -m crypto.jointdiff.train "$CONFIG"
+uv run python -m crypto.train_jointdiff "$CONFIG"
 echo "done: $(date)"

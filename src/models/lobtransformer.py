@@ -1,10 +1,7 @@
-"""LOBTransformer: transformer classifier over a pre-normalised LOB feature window.
+"""LOBTransformer: transformer classifier over a LOB feature window.
 
-Input : ``x`` ``(B, 1, T_past, F)`` — same format as DeepLOB / JointDiffusion.
+Input : ``(B, 1, T_past, n_features)`` — same format as DeepLOB.
 Output: ``(B, 3)`` class logits  (0=down, 1=stationary, 2=up).
-
-``F`` is set by ``config["n_features"]`` (written by train.py after building the
-dataset) and equals ``2n+11`` in OFI mode or ``4n+11`` in LOB mode.
 """
 
 from __future__ import annotations
@@ -39,14 +36,12 @@ class LOBTransformer(nn.Module):
         self.head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, 3))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, 1, T, F) → (B, T, F)
-        x = x.squeeze(1)
+        x = x.squeeze(1)  # (B, T, F)
         h = self.input_proj(x) + self.pos  # (B, T, d)
         h = self.encoder(h)
         return self.head(h.mean(dim=1))  # (B, 3)
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
-        """Return class logits ``(B, 3)`` from a standard LOB batch."""
         return self(batch["x"].to(device).float())
 
 

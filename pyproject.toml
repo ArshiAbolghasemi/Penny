@@ -5,12 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "penny"
 version = "0.1.0"
-description = "LOB direction forecasting: DeepLOB, JointDiffusion, and LOBTransformer on Binance crypto data"
+description = "LOB direction forecasting on crypto (Binance, Nobitex) and equity (Feishu A-share) data"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "diffusers>=0.32.0",
     "dvc[s3]>=3.56.0",
+    "h5py>=3.11.0",
     "loguru>=0.7.3",
     "numpy>=1.26.0,<3.0.0",
     "pandas>=2.2.0",
@@ -54,12 +55,16 @@ mps = [
 ]
 
 [project.scripts]
-penny-deeplob   = "crypto.deeplob.train:main"
-penny-jointdiff = "crypto.jointdiff.train:main"
-penny-lobtransformer = "crypto.lobtransformer.train:main"
+penny-crypto-deeplob         = "crypto.train_deeplob:main"
+penny-crypto-lobtransformer  = "crypto.train_lobtransformer:main"
+penny-crypto-jointdiff       = "crypto.train_jointdiff:main"
+penny-stocks-deeplob         = "stocks.feishu.train_deeplob:main"
+penny-stocks-lobtransformer  = "stocks.feishu.train_lobtransformer:main"
+penny-stocks-jointdiff       = "stocks.feishu.train_jointdiff:main"
+
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/crypto"]
+packages = ["src/crypto", "src/models", "src/stocks"]
 
 [tool.uv.sources]
 torch = [

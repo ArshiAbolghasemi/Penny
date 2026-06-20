@@ -36,5 +36,5 @@ fi
 
 CONFIG="${CONFIG:-configs/crypto/binance/lobtransformer/btcusdt_lob.json}"
 uv sync --extra "$UV_EXTRA"
-uv run python -m crypto.lobtransformer.train "$CONFIG"
+uv run python -m crypto.train_lobtransformer "$CONFIG"
 echo "done: $(date)"
