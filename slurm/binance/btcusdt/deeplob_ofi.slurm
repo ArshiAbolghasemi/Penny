@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=penny-bnb-deeplob-ofi
+#SBATCH --job-name=penny-btcusdt-deeplob-ofi
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "$ROOT_DIR"
 
-echo "Penny [Binance] DeepLOB OFI | host=$(hostname) | start=$(date)"
+echo "Penny [Binance BTCUSDT] DeepLOB OFI | host=$(hostname) | start=$(date)"
 
 if command -v module >/dev/null 2>&1; then module purge || true; fi
 if [[ -n "${VENV_PATH:-}" ]]; then source "$VENV_PATH/bin/activate"; fi
