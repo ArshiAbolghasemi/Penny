@@ -1,12 +1,17 @@
-"""Memmap cache builder + dataset factory for Feishu A-share equity data.
+"""In-RAM feature builder + dataset factory for Feishu A-share equity data.
 
-Memory model (mirrors crypto binance/nobitex)
----------------------------------------------
-Instead of materialising every T-day window to disk (which duplicates each
-day's features ~T times — tens of GB), this builds a single per-(asset, day)
-feature **memmap** of shape ``(N_rows, NF)`` and slides windows lazily at
-training time (see :class:`~stocks.feishu.dataset.LOBDataset`).  RAM scales
-with ``batch_size × T × NF``; disk scales with ``N_rows × NF``.
+Memory model
+------------
+The whole feature matrix is built **in RAM** every run — no disk cache. We hold
+a single per-(asset, day) feature array of shape ``(N_rows, NF)`` (~1 GB for the
+in-sample set: ~1.06M day-rows × 259 float32 features) and slide T-day windows
+lazily at training time (see :class:`~stocks.feishu.dataset.LOBDataset`).
+Materialising every window would instead duplicate each day ~T times (tens of
+GB), so the compact day-matrix + lazy slicing is both small and fast.
+
+Building fresh each run (rather than reusing a memmap cache) guarantees the
+features always reflect the current normalisation code — a stale cache built
+before a normalisation fix is the classic source of NaN losses.
 
 Expected data_dir contents (two flat multi-asset parquet files)::
 
@@ -43,8 +48,6 @@ Public API
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
 import numpy as np
@@ -108,61 +111,27 @@ def discover_symbols(data_dir: str | Path, config: dict | None = None) -> list[s
     return symbols
 
 
-# ── cache paths ──────────────────────────────────────────────────────────────
+# ── feature build (in RAM) ───────────────────────────────────────────────────
 
 
-def _cache_key(config: dict) -> str:
-    sig = {
-        k: config[k]
-        for k in ("feature_mode", "n_lob_levels", "T_past", "alpha", "lob_file")
-        if k in config
-    }
-    return hashlib.sha1(json.dumps(sig, sort_keys=True).encode()).hexdigest()[:8]
-
-
-def _cache_paths(cache_dir: Path, key: str) -> dict[str, Path]:
-    prefix = cache_dir / f"feishu_{key}"
-    return {
-        "feat": prefix.with_suffix(".feat.npy"),
-        "label": prefix.with_suffix(".label.npy"),
-        "asset": prefix.with_suffix(".asset.npy"),
-        "meta": prefix.with_suffix(".meta.json"),
-    }
-
-
-# ── cache build ──────────────────────────────────────────────────────────────
-
-
-def _build_cache(
+def _build_feature_matrix(
     config: dict,
     data_dir: str | Path,
-    cache_dir: str | Path,
     symbols: list[str],
-) -> tuple[np.memmap, np.ndarray, np.ndarray, int]:
-    """Build (or load) the per-(asset, day) feature memmap and row arrays.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Build the per-(asset, day) feature matrix and row arrays in RAM.
+
+    Built fresh from the parquet files every call — no disk cache — so the
+    features always reflect the current normalisation code.
 
     Returns:
         ``(feat, row_labels, row_asset, NF)`` where
-          feat        : ``(N_rows, NF)`` float32 memmap (read-only).
+          feat        : ``(N_rows, NF)`` float32 array (in RAM).
           row_labels  : ``(N_rows,)`` int64 causal labels (-1 = invalid).
           row_asset   : ``(N_rows,)`` int64 asset index per row (contiguous).
           NF          : feature count.
     """
-    cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    key = _cache_key(config)
-    paths = _cache_paths(cache_dir, key)
     nf = n_features(config)
-
-    if all(p.exists() for p in paths.values()):
-        meta = json.loads(paths["meta"].read_text())
-        n_rows = meta["n_rows"]
-        feat = np.memmap(paths["feat"], dtype=np.float32, mode="r", shape=(n_rows, nf))
-        row_labels = np.load(paths["label"])
-        row_asset = np.load(paths["asset"])
-        logger.info("loaded feishu cache key={}: {:,} rows × {} feat", key, n_rows, nf)
-        return feat, row_labels, row_asset, nf
-
     mode = config.get("feature_mode", "ofi")
     alpha = config["alpha"]
     n_levels = config.get("n_lob_levels", N_LEVELS)
@@ -174,7 +143,7 @@ def _build_cache(
     lob_file = config.get("lob_file", _LOB_FILE)
     daily_file = config.get("daily_file", _DAILY_FILE)
 
-    logger.info("building feishu cache key={} mode={} nf={}", key, mode, nf)
+    logger.info("building feishu features (RAM) mode={} nf={}", mode, nf)
 
     # ── Pass 1 (daily, small): per-asset OHLCV raw feats, labels, day order ──
     daily_all = pd.read_parquet(root / daily_file).rename(columns={day_col: "date"})
@@ -216,7 +185,7 @@ def _build_cache(
         raise ValueError("No (asset, day) rows to build — check data files.")
 
     sym_to_idx = {s: i for i, s in enumerate(ordered_syms)}
-    feat = np.memmap(paths["feat"], dtype=np.float32, mode="w+", shape=(n_rows, nf))
+    feat = np.zeros((n_rows, nf), dtype=np.float32)
     row_labels = np.full(n_rows, -1, dtype=np.int64)
     row_asset = np.empty(n_rows, dtype=np.int64)
     ohlcv_block = np.zeros((n_rows, N_OHLCV), dtype=np.float32)
@@ -279,23 +248,15 @@ def _build_cache(
         mat = ohlcv_block[idx].astype(np.float64)
         mu = np.nanmean(mat, axis=0)
         sigma = np.nanstd(mat, axis=0)
-        sigma[sigma < 1e-8] = 1.0
+        sigma = np.where(~np.isfinite(sigma) | (sigma < 1e-8), 1.0, sigma)
         normed = ((mat - mu) / sigma).astype(np.float32)
         feat[idx, n_lob_feat:] = np.clip(normed, -CLIP_VAL, CLIP_VAL)
 
-    feat.flush()
-    del feat, ohlcv_block
+    del ohlcv_block
 
-    np.save(paths["label"], row_labels)
-    np.save(paths["asset"], row_asset)
-    paths["meta"].write_text(
-        json.dumps(
-            {"n_rows": n_rows, "nf": nf, "n_assets": len(ordered_syms)}, indent=2
-        )
-    )
-    logger.info("feishu cache built key={}: {:,} rows × {} feat", key, n_rows, nf)
-
-    feat = np.memmap(paths["feat"], dtype=np.float32, mode="r", shape=(n_rows, nf))
+    # final safety net: no non-finite values ever reach the model
+    np.nan_to_num(feat, copy=False, nan=0.0, posinf=CLIP_VAL, neginf=-CLIP_VAL)
+    logger.info("feishu features built (in RAM): {:,} rows × {} feat", n_rows, nf)
     return feat, row_labels, row_asset, nf
 
 
@@ -317,13 +278,16 @@ def build_datasets(
     cache_dir: str | Path,
     symbols: list[str],
 ) -> tuple[LOBDataset, LOBDataset, LOBDataset, dict]:
-    """Return ``(train_ds, val_ds, test_ds, meta)`` over the memmap cache.
+    """Return ``(train_ds, val_ds, test_ds, meta)`` over the in-RAM feature matrix.
 
     Windows are computed per asset (causal label, no straddling), then split
     70 / 15 / 15 chronologically within each asset.
+
+    Note: ``cache_dir`` is accepted for API compatibility but unused — features
+    are built fresh in RAM each call (no disk cache).
     """
     T = config["T_past"]
-    feat, row_labels, row_asset, nf = _build_cache(config, data_dir, cache_dir, symbols)
+    feat, row_labels, row_asset, nf = _build_feature_matrix(config, data_dir, symbols)
 
     train_starts: list[int] = []
     val_starts: list[int] = []

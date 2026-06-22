@@ -187,23 +187,33 @@ def causal_rolling_zscore(
     """Causal rolling z-score applied feature-wise (no lookahead).
 
     For day ``t``, statistics come from days ``[max(0, t-window), t)``
-    (past only).  Day 0 bootstraps from its own row.
+    (past only).
+
+    CRITICAL: only normalise a feature when its rolling std is meaningfully
+    non-zero. The OFI grid is sparse — most (slot, level) cells are zero-filled,
+    so their look-back std is ~0. Dividing a non-zero numerator by a tiny std
+    explodes the value to ~1e14 and poisons every downstream model (NaN losses).
+    Such flat features are therefore left mean-centred only (÷1.0). Warm-up days
+    with fewer than 2 past days carry no reliable statistics, so they are left at
+    zero rather than scaled by an arbitrary constant. This mirrors the validated
+    notebook procedure.
 
     Args:
         matrix: ``(n_days, n_feat)`` float32 array.
         window: Look-back in trading days (default 5).
 
     Returns:
-        Same-shape float32 array.
+        Same-shape float32 array; warm-up rows (< 2 past days) are zero.
     """
     n_days = matrix.shape[0]
-    out = np.empty_like(matrix, dtype=np.float32)
+    out = np.zeros_like(matrix, dtype=np.float32)
     for t in range(n_days):
-        start = max(0, t - window)
-        past = matrix[start:t] if t > 0 else matrix[:1]
+        past = matrix[max(0, t - window) : t]
+        if len(past) < 2:
+            continue  # warm-up: no reliable stats → leave row at 0
         mu = past.mean(axis=0)
         sigma = past.std(axis=0)
-        sigma[sigma < 1e-8] = 1.0
+        sigma = np.where(sigma < 1e-6, 1.0, sigma)  # don't blow up flat features
         out[t] = (matrix[t] - mu) / sigma
     return out
 

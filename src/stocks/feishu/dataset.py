@@ -1,10 +1,10 @@
-"""Memmap-backed windowed dataset for Feishu equity data.
+"""In-RAM windowed dataset for Feishu equity data.
 
-Mirrors the crypto ``LOBDataset``: the per-(asset, day) feature matrix is
-stored **once** in a ``np.memmap`` on disk, and each T-day window is sliced
-on demand in ``__getitem__``.  RAM therefore scales with
-``batch_size × T_past × NF`` — not with the number of windows (which would
-duplicate every day's features ~T times).
+Mirrors the crypto ``LOBDataset``: the per-(asset, day) feature matrix is held
+**once** as a single ``(N_rows, NF)`` array in RAM, and each T-day window is
+sliced on demand in ``__getitem__``.  Storage therefore scales with
+``N_rows × NF`` (the compact day-matrix) — not with the number of windows
+(which would duplicate every day's features ~T times).
 
 Each ``start`` index points at the first row of a window inside one asset's
 contiguous block of rows; windows never straddle assets (the builder only
@@ -28,13 +28,13 @@ from torch.utils.data import Dataset
 class LOBDataset(Dataset):
     def __init__(
         self,
-        feat: np.memmap,
+        feat: np.ndarray,
         starts: np.ndarray,
         labels: np.ndarray,
         t_past: int,
     ) -> None:
         """Args:
-        feat:   ``(N_rows, NF)`` float32 memmap of pre-normalised features.
+        feat:   ``(N_rows, NF)`` float32 array of pre-normalised features (in RAM).
         starts: ``(N_windows,)`` int64 window start rows (within one asset).
         labels: ``(N_rows,)`` int64 per-row causal labels (-1 = invalid).
         t_past: Window length in trading days.
