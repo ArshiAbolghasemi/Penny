@@ -3,19 +3,18 @@
 Two modes controlled by ``config["feature_mode"]``:
 
   ``"lob"`` — price offsets + log volumes per level (classical DeepLOB input)
-  ``"ofi"`` — per-level signed Cont-OFI + signed log transform (default)
+  ``"ofi"`` — per-level net Cont-OFI from raw prices/volumes (no signed-log) (default)
 
 Both modes append the same 11 microstructure / trade / quote features.
 
 Feature layout
 --------------
 OFI mode  (n levels):
-  [0 : n)       bid OFI per level  (signed-log)
-  [n : 2n)      ask OFI per level  (signed-log)
-  [2n : 2n+3)   spread/mid, log-depth-imbalance, log-return
-  [2n+3 : 2n+8) log-buy-vol, log-sell-vol, trade-imbalance, log-trade-count, vwap-dev
-  [2n+8 : 2n+11) log-trade-count (activity proxy), spread-norm, |log-ret| (range proxy)
-  total = 2n + 11
+  [0 : n)       net Cont-OFI per level  (raw, _bOF - _aOF)
+  [n : n+3)     spread/mid, log-depth-imbalance, log-return
+  [n+3 : n+8)   log-buy-vol, log-sell-vol, trade-imbalance, log-trade-count, vwap-dev
+  [n+8 : n+11)  log-trade-count (activity proxy), spread-norm, |log-ret| (range proxy)
+  total = n + 11
 
 LOB mode  (n levels):
   [0 : n)       bid price offset = (mid - bid_p[i]) / mid
@@ -44,12 +43,26 @@ import pandas as pd
 def n_features(config: dict) -> int:
     n = config["n_lob_levels"]
     mode = config.get("feature_mode", "ofi")
-    lob = 2 * n if mode == "ofi" else 4 * n
+    lob = n if mode == "ofi" else 4 * n
     return lob + 11
 
 
-def _signed_log(x: np.ndarray) -> np.ndarray:
-    return np.sign(x) * np.log1p(np.abs(x))
+def _bOF(b_price, b_vol):
+    up = b_price > b_price.shift(1)
+    same = b_price == b_price.shift(1)
+    dn = b_price < b_price.shift(1)
+    return up * b_vol + same * (b_vol - b_vol.shift(1)) + dn * (-b_vol.shift(1))
+
+
+def _aOF(a_price, a_vol):
+    up = a_price > a_price.shift(1)
+    same = a_price == a_price.shift(1)
+    dn = a_price < a_price.shift(1)
+    return up * (-a_vol.shift(1)) + same * (a_vol - a_vol.shift(1)) + dn * a_vol
+
+
+def _OFI(bp, bv, ap, av):
+    return _bOF(bp, bv) - _aOF(ap, av)
 
 
 def extract_features(day_df: pd.DataFrame, config: dict) -> np.ndarray:
@@ -78,34 +91,18 @@ def extract_features(day_df: pd.DataFrame, config: dict) -> np.ndarray:
     col = 0
 
     if mode == "ofi":
+        # Net Cont-OFI per level from the raw per-level prices/volumes
+        # (p_b, v_b, p_a, v_a), no signed-log transform.  First row has no
+        # previous snapshot to difference against, so it is set to 0.
         for i in range(n):
-            prev_bp = np.roll(bid_p[:, i], 1)
-            prev_bp[0] = bid_p[0, i]
-            prev_bv = np.roll(bid_v[:, i], 1)
-            prev_bv[0] = bid_v[0, i]
-            dp_b = bid_p[:, i] - prev_bp
-            bofi = np.where(
-                dp_b > 0,
-                bid_v[:, i],
-                np.where(dp_b < 0, -prev_bv, bid_v[:, i] - prev_bv),
-            )
-            bofi[0] = 0.0
-
-            prev_ap = np.roll(ask_p[:, i], 1)
-            prev_ap[0] = ask_p[0, i]
-            prev_av = np.roll(ask_v[:, i], 1)
-            prev_av[0] = ask_v[0, i]
-            dp_a = ask_p[:, i] - prev_ap
-            aofi = np.where(
-                dp_a < 0,
-                ask_v[:, i],
-                np.where(dp_a > 0, -prev_av, ask_v[:, i] - prev_av),
-            )
-            aofi[0] = 0.0
-
-            out[:, col] = _signed_log(bofi).astype(np.float32)
-            out[:, col + 1] = _signed_log(aofi).astype(np.float32)
-            col += 2
+            ofi = _OFI(
+                day_df[f"bids[{i}].price"],
+                day_df[f"bids[{i}].amount"],
+                day_df[f"asks[{i}].price"],
+                day_df[f"asks[{i}].amount"],
+            ).fillna(0.0)
+            out[:, i] = ofi.values.astype(np.float32)
+        col = n
     else:  # lob
         for i in range(n):
             out[:, i] = ((mid - bid_p[:, i]) / (mid + eps)).astype(np.float32)
