@@ -227,7 +227,7 @@ def _build_feature_matrix(
             day_lob = day_lob.reset_index(drop=True)
             if mode == "ofi":
                 ofi_df = compute_ofi_tick(day_lob)
-                block[k] = snap_to_slots(ofi_df, day_lob).reshape(-1)  # (240,)
+                block[k] = snap_to_slots(ofi_df, day_lob).reshape(-1)  # (480,)
             else:
                 block[k] = extract_lob_day(day_lob, n_levels)  # (4n,)
 
