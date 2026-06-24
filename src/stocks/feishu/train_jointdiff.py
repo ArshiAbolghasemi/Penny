@@ -35,7 +35,7 @@ def _train_epoch(model, sched, loader, optimizer, lr_sched, config, device):
     model.train()
     t_max = sched.config.num_train_timesteps
     lam = config.get("lambda_trend", 1.0)
-    trend_taper = config.get("trend_taper", True)
+    trend_taper = config.get("trend_taper", False)
     grad_clip = config.get("grad_clip", 1.0)
     tot = dif = trd = 0.0
     n = 0
