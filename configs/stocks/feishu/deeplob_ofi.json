@@ -1,5 +1,7 @@
 {
   "data_dir": "data/stocks/feishu",
+  "lob_file": "lob_data.parquet",
+  "daily_file": "daily_ohlcv.parquet",
   "cache_dir": "data/cache/stocks/feishu",
   "checkpoint_dir": "checkpoints/stocks/feishu/deeplob",
   "n_lob_levels": 10,

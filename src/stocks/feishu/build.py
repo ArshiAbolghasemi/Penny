@@ -16,8 +16,8 @@ before a normalisation fix is the classic source of NaN losses.
 Expected data_dir contents (two flat multi-asset parquet files)::
 
     data_dir/
-      lob_data_in_sample.parquet    # 5-min LOB snapshots, all symbols
-      daily_data_in_sample.parquet  # daily OHLCV, all symbols
+      lob_data.parquet              # 5-min LOB snapshots, all symbols
+      daily_ohlcv.parquet           # daily OHLCV, all symbols
 
 LOB file columns: asset_id, trade_day_id, time (HH:MM:SS),
   bid_price_1..10, ask_price_1..10, bid_volume_1..10, ask_volume_1..10.
@@ -69,8 +69,8 @@ from stocks.feishu.features import (
 )
 from stocks.feishu.labels import assign_labels, compute_forward_returns
 
-_LOB_FILE = "lob_data_in_sample.parquet"
-_DAILY_FILE = "daily_data_in_sample.parquet"
+_LOB_FILE = "lob_data.parquet"
+_DAILY_FILE = "daily_ohlcv.parquet"
 _SYM_COL = "asset_id"
 _DAY_COL = "trade_day_id"
 _TIME_COL = "time"
