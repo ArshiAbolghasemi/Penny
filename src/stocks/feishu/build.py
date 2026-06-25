@@ -69,8 +69,8 @@ from stocks.feishu.features import (
 )
 from stocks.feishu.labels import assign_labels, compute_forward_returns
 
-_LOB_FILE = "lob_data.parquet"
-_DAILY_FILE = "daily_ohlcv.parquet"
+_LOB_FILE = "lob_data_in_sample.parquet"
+_DAILY_FILE = "daily_data_in_sample.parquet"
 _SYM_COL = "asset_id"
 _DAY_COL = "trade_day_id"
 _TIME_COL = "time"
