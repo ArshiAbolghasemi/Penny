@@ -35,6 +35,7 @@ else
 fi
 
 CONFIG="${CONFIG:-configs/crypto/binance/deeplob/solusdt_lob.json}"
+export UV_PROJECT_ENVIRONMENT=".venv-${UV_EXTRA}"
 uv sync --extra "$UV_EXTRA"
 uv run python -m crypto.train_deeplob "$CONFIG"
 echo "done: $(date)"
