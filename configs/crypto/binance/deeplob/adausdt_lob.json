@@ -21,7 +21,8 @@
   "weight_decay": 1e-05,
   "warmup_steps": 500,
   "grad_clip": 1.0,
-  "epochs": 50,
-  "patience": 10,
-  "device": "cuda"
+  "epochs": 80,
+  "patience": 15,
+  "device": "cuda",
+  "seed": 42
 }

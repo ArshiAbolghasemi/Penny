@@ -30,7 +30,13 @@ from torch.utils.data import DataLoader
 
 from crypto.dataset import build_datasets
 from utils.evaluate import run_test
-from utils.training import build_cosine_schedule, resolve_device
+from utils.training import (
+    build_cosine_schedule,
+    resolve_device,
+    resolve_seed,
+    seed_worker,
+    set_seed,
+)
 from models.jointdiff import JointDiffusion, count_parameters
 
 
@@ -100,6 +106,10 @@ def main() -> None:
         sys.exit(1)
     config = json.loads(config_path.read_text())
 
+    seed = resolve_seed(config)
+    config["seed"] = seed
+    generator = set_seed(seed)
+
     device = resolve_device(config["device"])
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     ckpt_dir = (
@@ -149,6 +159,8 @@ def main() -> None:
         shuffle=True,
         num_workers=nw,
         pin_memory=(device.type == "cuda"),
+        worker_init_fn=seed_worker,
+        generator=generator,
     )
     val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
 

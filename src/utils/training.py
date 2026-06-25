@@ -1,16 +1,65 @@
-"""Shared training utilities for all crypto model families.
+"""Shared training utilities for all crypto + equity model families.
 
-Provides ``resolve_device`` (cuda→mps→cpu fallback) and ``build_cosine_schedule``
-(linear warmup + cosine decay), which appear identically in every train.py.
+Provides ``resolve_device`` (cuda→mps→cpu fallback), ``build_cosine_schedule``
+(linear warmup + cosine decay), and reproducibility helpers (``resolve_seed`` /
+``set_seed`` / ``seed_worker``) so every model family trains under an identical,
+seed-controlled protocol — a prerequisite for a fair cross-model comparison.
 """
 
 from __future__ import annotations
 
 import math
+import os
+import random
 
+import numpy as np
 import torch
 from loguru import logger
 from torch.optim.lr_scheduler import LambdaLR
+
+
+def resolve_seed(config: dict) -> int:
+    """Resolve the run seed.  Precedence: ``$PENNY_SEED`` > ``config["seed"]`` > 42.
+
+    The env override lets one config be launched across several seeds (e.g.
+    ``PENNY_SEED=1,2,3``) without editing files — use it to report mean ± std
+    instead of a single noisy run.
+    """
+    env = os.environ.get("PENNY_SEED")
+    if env is not None and env.strip():
+        return int(env)
+    return int(config.get("seed", 42))
+
+
+def set_seed(seed: int) -> torch.Generator:
+    """Seed Python / NumPy / Torch (CPU + all CUDA devices) for reproducibility.
+
+    Returns a CPU ``torch.Generator`` to hand to ``DataLoader(generator=...)`` so
+    shuffling order is deterministic too.  ``cudnn.benchmark`` is disabled so the
+    same seed yields the same run on the same hardware; we deliberately do *not*
+    force ``use_deterministic_algorithms`` (some conv kernels lack a deterministic
+    backward and would raise), which is fine here — every model still gets the
+    identical seed, data order, and init protocol.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return g
+
+
+def seed_worker(worker_id: int) -> None:
+    """``DataLoader`` ``worker_init_fn`` — reseed NumPy/random per worker.
+
+    Without this, multi-worker shuffling reintroduces nondeterminism even after
+    ``set_seed``.  Pass alongside ``generator=`` from :func:`set_seed`.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def resolve_device(requested: str) -> torch.device:

@@ -23,5 +23,6 @@
   "batch_size": 64,
   "epochs": 80,
   "patience": 15,
-  "device": "cuda"
+  "device": "cuda",
+  "seed": 42
 }
