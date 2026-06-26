@@ -56,9 +56,11 @@ mps = [
 penny-crypto-deeplob         = "crypto.train_deeplob:main"
 penny-crypto-lobtransformer  = "crypto.train_lobtransformer:main"
 penny-crypto-jointdiff       = "crypto.train_jointdiff:main"
+penny-crypto-diffclf         = "crypto.train_diffclf:main"
 penny-stocks-deeplob         = "stocks.feishu.train_deeplob:main"
 penny-stocks-lobtransformer  = "stocks.feishu.train_lobtransformer:main"
 penny-stocks-jointdiff       = "stocks.feishu.train_jointdiff:main"
+penny-stocks-diffclf         = "stocks.feishu.train_diffclf:main"
 
 
 [tool.hatch.build.targets.wheel]
