@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import sys
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from crypto.multi_dataset import build_multi_datasets
 from models.ddpm import DDPMScheduler
 from models.jointdiffcfg import JointDiffCFG, count_parameters
 from utils.evaluate import per_asset_metrics, run_test
+from utils.pcgrad import pcgrad_backward
 from utils.training import (
     build_cosine_schedule,
     resolve_device,
@@ -55,9 +57,12 @@ def _train_epoch(model, sched, loader, optimizer, lr_sched, config, device):
     lam = config.get("lambda_trend", 1.0)
     trend_taper = config.get("trend_taper", False)
     grad_clip = config.get("grad_clip", 1.0)
+    grad_surgery = config.get("grad_surgery", False)
     p_uncond = model.p_uncond
     null_asset = model.null_asset
     tot = dif = trd = 0.0
+    cos_sum = 0.0
+    cos_n = conflict_n = 0
     n = 0
     for batch in loader:
         x0 = batch["x"].to(device).float()
@@ -90,7 +95,14 @@ def _train_epoch(model, sched, loader, optimizer, lr_sched, config, device):
         loss = diff_loss + lam * cls_loss
 
         optimizer.zero_grad()
-        loss.backward()
+        if grad_surgery and cls_loss.requires_grad:
+            cos = pcgrad_backward(diff_loss, lam * cls_loss, model.parameters())
+            if not math.isnan(cos):
+                cos_sum += cos
+                cos_n += 1
+                conflict_n += int(cos < 0)
+        else:
+            loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         lr_sched.step()
@@ -99,7 +111,11 @@ def _train_epoch(model, sched, loader, optimizer, lr_sched, config, device):
         trd += cls_loss.item()
         n += 1
     n = max(n, 1)
-    return {"total": tot / n, "diff": dif / n, "trend": trd / n}
+    out = {"total": tot / n, "diff": dif / n, "trend": trd / n}
+    if cos_n:
+        out["grad_cos"] = cos_sum / cos_n
+        out["conflict_rate"] = conflict_n / cos_n
+    return out
 
 
 @torch.no_grad()
@@ -209,8 +225,14 @@ def main() -> None:
             model, noise_sched, train_loader, optimizer, lr_sched, config, device
         )
         val_ce, val_acc = _validate(model, val_loader, device)
+        surgery = (
+            " | cos={:.3f} conflict={:.1%}".format(tr["grad_cos"], tr["conflict_rate"])
+            if "grad_cos" in tr
+            else ""
+        )
         logger.info(
-            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} acc={:.4f}",
+            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} acc={:.4f}"
+            + surgery,
             epoch,
             tr["total"],
             tr["diff"],
