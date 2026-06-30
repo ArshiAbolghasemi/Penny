@@ -27,7 +27,9 @@ import torch.nn.functional as F
 from models.jointdiff import sinusoidal_embedding
 
 
-def _modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+def _modulate(
+    x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor
+) -> torch.Tensor:
     # x: (B, N, D); shift/scale: (B, D)
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
@@ -38,13 +40,14 @@ class DiTBlock(nn.Module):
     def __init__(self, dim: int, heads: int, mlp_ratio: float, dropout: float) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.attn = nn.MultiheadAttention(
-            dim, heads, dropout=dropout, batch_first=True
-        )
+        self.attn = nn.MultiheadAttention(dim, heads, dropout=dropout, batch_first=True)
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         hidden = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(
-            nn.Linear(dim, hidden), nn.GELU(), nn.Dropout(dropout), nn.Linear(hidden, dim)
+            nn.Linear(dim, hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, dim),
         )
         # produces shift/scale/gate for both the attention and MLP sub-blocks
         self.ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 6 * dim))
