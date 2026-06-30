@@ -9,9 +9,10 @@ where L_diff is the v-prediction diffusion loss (min-SNR weighted) and L_class i
 cross-entropy.  γ is set via sjl_lambda_class (default 1.0).  Both losses
 backpropagate through all shared weights every step; no stop-gradient anywhere.
 
-The Jacobian computation runs O(K·(T+F)/probe_stride) backbone forward passes per
-step (K = len(sjl_t_star)).  Increase sjl_probe_stride or shrink sjl_t_star to
-trade saliency resolution for speed.
+The Jacobian saliency runs K·n_probes vector-Jacobian products per step
+(K = len(sjl_t_star), n_probes = sjl_n_probes), independent of T and F.  Raise
+sjl_n_probes for a lower-variance estimate, or shrink sjl_t_star, to trade
+accuracy for speed.
 
 Usage::
 

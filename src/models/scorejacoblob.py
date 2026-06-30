@@ -10,12 +10,17 @@ A four-stage, single-phase model for mid-price trend prediction (down / flat / u
                               feature/level axis, trained with the
                               v-parameterisation + min-SNR loss weighting.
   Stage 3  Score-Jacobian   — the input-space Jacobian of the score s_θ(x̂, t*)
-                              is probed by vector-Jacobian products and marginalised
-                              into a temporal saliency A_t ∈ ℝ^T and a feature
-                              saliency A_f ∈ ℝ^F, at K noise levels (multi-scale).
-                              During training create_graph=True keeps the VJPs
-                              inside the computation graph so gradients flow back
-                              through them into the UNet and BiN weights.
+                              is marginalised into a temporal saliency A_t ∈ ℝ^T
+                              and a feature saliency A_f ∈ ℝ^F at K noise levels
+                              (multi-scale).  The marginal column magnitudes of
+                              ∂s/∂x are estimated by a Hutchinson random-projection
+                              average: n_probes Rademacher cotangents v give VJPs
+                              Jᵀv whose mean absolute value is, by the Khintchine
+                              inequality, proportional to the per-input-element
+                              Jacobian norm.  During training create_graph=True
+                              keeps the VJPs inside the computation graph so
+                              gradients flow back through them into the UNet and
+                              BiN weights.
   Stage 4  Gated head       — the bottleneck h (B, C_b, T_b, F_b) is gated
                               element-wise by the Jacobian saliencies along the
                               channel, time, and feature spatial axes, then pooled
@@ -35,9 +40,9 @@ backpropagate normally through all shared weights every step.
 Batch format: ``{"x": (B, 1, T, F), "label": int}`` — identical to every other
 crypto model.  ``predict(batch, device) → (B, 3)`` logits.
 
-Note on compute: the VJP loop in extract_saliency executes O(K·(T+F)/probe_stride)
-backbone forward passes per training step.  Increase sjl_probe_stride or reduce
-sjl_t_star to trade saliency resolution for speed.
+Note on compute: extract_saliency executes K·n_probes vector-Jacobian products
+per step (independent of T and F).  Raise sjl_n_probes for a lower-variance
+saliency estimate, or shrink sjl_t_star, to trade accuracy for speed.
 """
 
 from __future__ import annotations
@@ -218,7 +223,7 @@ class ScoreJacobLOB(nn.Module):
 
         self.t_star = list(config.get("sjl_t_star", [20, 50, 100]))
         self.repr_t = int(config.get("sjl_repr_t", 0))
-        self.probe_stride = int(config.get("sjl_probe_stride", 1))
+        self.n_probes = int(config.get("sjl_n_probes", 8))
         self.min_snr_gamma = float(config.get("sjl_min_snr_gamma", 5.0))
         self.lambda_class = float(config.get("sjl_lambda_class", 1.0))
 
@@ -286,8 +291,7 @@ class ScoreJacobLOB(nn.Module):
         and BiN weights.  During inference create_graph=False saves memory.
         """
         B, _, T, Fd = x_hat_2d.shape
-        wt = x_hat_2d.new_zeros(B, T)
-        wf = x_hat_2d.new_zeros(B, Fd)
+        sens = x_hat_2d.new_zeros(B, 1, T, Fd)  # mean |∂s/∂x| over probes/levels
 
         with torch.enable_grad():
             # If x_hat_2d has no grad tracking (e.g. inference under no_grad),
@@ -302,31 +306,22 @@ class ScoreJacobLOB(nn.Module):
             for ts in self.t_star:
                 t = torch.full((B,), ts, dtype=torch.long, device=x.device)
                 s = self.score(x, t)  # (B, 1, T, F)
-
-                for to in range(0, T, self.probe_stride):
-                    m = torch.zeros_like(s)
-                    m[:, :, to, :] = 1.0
+                for _ in range(self.n_probes):
+                    # Rademacher cotangent v ∈ {-1, +1}; Jᵀv has the shape of x.
+                    v = torch.randint(0, 2, s.shape, device=s.device).to(s.dtype)
+                    v = v * 2.0 - 1.0
                     (g,) = torch.autograd.grad(
                         s,
                         x,
-                        grad_outputs=m,
+                        grad_outputs=v,
                         retain_graph=True,
                         create_graph=create_graph,
                     )
-                    wt = wt + g.abs().sum(dim=(1, 3))  # sum over channel + feature
+                    sens = sens + g.abs()
 
-                for fo in range(0, Fd, self.probe_stride):
-                    m = torch.zeros_like(s)
-                    m[:, :, :, fo] = 1.0
-                    (g,) = torch.autograd.grad(
-                        s,
-                        x,
-                        grad_outputs=m,
-                        retain_graph=True,
-                        create_graph=create_graph,
-                    )
-                    wf = wf + g.abs().sum(dim=(1, 2))  # sum over channel + time
-
+        sens = sens / (len(self.t_star) * self.n_probes)
+        wt = sens.sum(dim=(1, 3))  # marginalise over channel + feature → (B, T)
+        wf = sens.sum(dim=(1, 2))  # marginalise over channel + time    → (B, F)
         wt = wt / (wt.mean(dim=1, keepdim=True) + 1e-8)
         wf = wf / (wf.mean(dim=1, keepdim=True) + 1e-8)
         return wt, wf
