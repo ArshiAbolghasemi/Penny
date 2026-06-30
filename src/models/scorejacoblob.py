@@ -21,10 +21,10 @@ A four-stage, single-phase model for mid-price trend prediction (down / flat / u
                               keeps the VJPs inside the computation graph so
                               gradients flow back through them into the UNet and
                               BiN weights.
-  Stage 4  Gated head       — the bottleneck h (B, C_b, T_b, F_b) is gated
-                              element-wise by the Jacobian saliencies along the
-                              channel, time, and feature spatial axes, then pooled
-                              and classified.
+  Stage 4  Saliency head    — the bottleneck h (B, C_b, T_b, F_b) is average-
+                              pooled (JointDiffusion-style) and concatenated with
+                              an MLP-extracted feature from the Jacobian temporal
+                              + feature saliencies, then a simple MLP classifies.
 
 Training (single phase)
 -----------------------
@@ -139,7 +139,11 @@ class Up2D(nn.Module):
 
 
 class DiffBackbone2D(nn.Module):
-    """2-D U-Net over (time × feature) with a bottleneck MLP (v-prediction).
+    """2-D U-Net over (time × feature) with a conv-only bottleneck (v-prediction).
+
+    Like JointDiffusion's backbone: no bottleneck attention or channel-space MLP —
+    the only learned mixing at the bottleneck is the conv stack in the down path.
+    The cheap MLP feature extraction lives in the head, on the Jacobian saliencies.
 
     Input:  (B, 1, T, F) — single-channel LOB window
     Output: (B, 1, T, F) via forward_v, or (B, C_b, T_b, F_b) via bottleneck
@@ -150,9 +154,7 @@ class DiffBackbone2D(nn.Module):
         base: int,
         depth: int,
         temb_dim: int,
-        heads: int,
         use_checkpoint: bool = True,
-        mlp_ratio: int = 4,
     ) -> None:
         super().__init__()
         self.temb_dim = temb_dim
@@ -166,12 +168,6 @@ class DiffBackbone2D(nn.Module):
         self.downs = nn.ModuleList(
             Down2D(chans[i], chans[i + 1], temb_dim) for i in range(depth)
         )
-        self.mlp = nn.Sequential(
-            nn.Linear(chans[-1], chans[-1] * mlp_ratio),
-            nn.GELU(),
-            nn.Linear(chans[-1] * mlp_ratio, chans[-1]),
-        )
-        self.mlp_norm = nn.LayerNorm(chans[-1])
         self.ups = nn.ModuleList(
             Up2D(chans[i + 1], chans[i], chans[i], temb_dim)
             for i in reversed(range(depth))
@@ -192,24 +188,16 @@ class DiffBackbone2D(nn.Module):
             return checkpoint(module, *args, use_reentrant=False)
         return module(*args)
 
-    def _spatial_mlp(self, h: torch.Tensor) -> torch.Tensor:
-        # h: (B, C, H, W) → position-wise MLP over channels at each spatial token
-        B, C, H, W = h.shape
-        z = h.flatten(2).transpose(1, 2)  # (B, H*W, C)
-        z = self.mlp_norm(z + self.mlp(z))
-        return z.transpose(1, 2).view(B, C, H, W)
-
     def _encode(self, x: torch.Tensor, temb: torch.Tensor):
         h = self._run(self.stem, x, temb)  # (B, base, T, F)
         skips = [h]
         for down in self.downs:
             h = self._run(down, h, temb)
             skips.append(h)
-        h = self._spatial_mlp(h)
         return h, skips
 
     def bottleneck(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """Return post-MLP bottleneck (B, C_b, T_b, F_b)."""
+        """Return the down-path bottleneck (B, C_b, T_b, F_b)."""
         return self._encode(x, self._temb(t))[0]
 
     def forward_v(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
@@ -239,7 +227,6 @@ class ScoreJacobLOB(nn.Module):
         base = config.get("sjl_base_channels", 64)
         depth = config.get("sjl_depth", 2)
         temb_dim = config.get("sjl_time_emb", 128)
-        heads = config.get("sjl_attn_heads", 4)
         hidden = config.get("sjl_head_hidden", 128)
 
         self.bin = BiN(T, F_dim)
@@ -247,7 +234,6 @@ class ScoreJacobLOB(nn.Module):
             base,
             depth,
             temb_dim,
-            heads,
             use_checkpoint=config.get("sjl_grad_checkpoint", True),
         )
 
@@ -269,9 +255,15 @@ class ScoreJacobLOB(nn.Module):
         self.register_buffer("sqrt_1mab", (1.0 - ab).sqrt())
 
         C_b = self.backbone.bottleneck_ch
-        self.gate_feat = nn.Linear(F_dim, C_b)
+        # MLP feature extractor over the Jacobian temporal+feature saliencies.
+        self.sal_mlp = nn.Sequential(
+            nn.Linear(T + F_dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
+        )
+        # Simple classifier over [pooled bottleneck ‖ saliency features].
         self.head = nn.Sequential(
-            nn.Linear(C_b, hidden),
+            nn.Linear(C_b + hidden, hidden),
             nn.GELU(),
             nn.Dropout(config.get("sjl_dropout", 0.1)),
             nn.Linear(hidden, 3),
@@ -356,24 +348,15 @@ class ScoreJacobLOB(nn.Module):
         wf = wf / (wf.mean(dim=1, keepdim=True) + 1e-8)
         return wt, wf
 
-    # ── Stage 4: gated classification head ──────────────────────────────────
+    # ── Stage 4: saliency-MLP classification head ───────────────────────────
 
     def head_logits(
         self, wt: torch.Tensor, wf: torch.Tensor, h: torch.Tensor
     ) -> torch.Tensor:
-        # h: (B, C_b, T_b, F_b)
-        B, C_b, T_b, F_b = h.shape
-        g_c = torch.sigmoid(self.gate_feat(wf))  # (B, C_b) channel gate via linear
-        g_t = F.interpolate(
-            wt.unsqueeze(1), size=T_b, mode="linear", align_corners=False
-        ).squeeze(1)  # (B, T_b) temporal spatial gate
-        g_f = F.interpolate(
-            wf.unsqueeze(1), size=F_b, mode="linear", align_corners=False
-        ).squeeze(1)  # (B, F_b) feature spatial gate
-        h_gated = (
-            h * g_c[:, :, None, None] * g_t[:, None, :, None] * g_f[:, None, None, :]
-        )  # (B, C_b, T_b, F_b)
-        return self.head(h_gated.mean(dim=(-2, -1)))  # (B, 3)
+        # h: (B, C_b, T_b, F_b); wt: (B, T); wf: (B, F)
+        pooled = h.mean(dim=(-2, -1))  # (B, C_b) — JointDiffusion-style pooling
+        sal = self.sal_mlp(torch.cat([wt, wf], dim=1))  # (B, hidden)
+        return self.head(torch.cat([pooled, sal], dim=1))  # (B, 3)
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         """Trend logits from a raw batch dict. Accepts ``{"x": (B,1,T,F), ...}``."""
