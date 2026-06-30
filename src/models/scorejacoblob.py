@@ -50,6 +50,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from models.jointdiff import _groups, sinusoidal_embedding
 
@@ -144,9 +145,17 @@ class DiffBackbone2D(nn.Module):
     Output: (B, 1, T, F) via forward_v, or (B, C_b, T_b, F_b) via bottleneck
     """
 
-    def __init__(self, base: int, depth: int, temb_dim: int, heads: int) -> None:
+    def __init__(
+        self,
+        base: int,
+        depth: int,
+        temb_dim: int,
+        heads: int,
+        use_checkpoint: bool = True,
+    ) -> None:
         super().__init__()
         self.temb_dim = temb_dim
+        self.use_checkpoint = use_checkpoint
         self.time_mlp = nn.Sequential(
             nn.Linear(temb_dim, temb_dim), nn.SiLU(), nn.Linear(temb_dim, temb_dim)
         )
@@ -167,6 +176,17 @@ class DiffBackbone2D(nn.Module):
     def _temb(self, t: torch.Tensor) -> torch.Tensor:
         return self.time_mlp(sinusoidal_embedding(t, self.temb_dim))
 
+    def _run(self, module: nn.Module, *args: torch.Tensor) -> torch.Tensor:
+        """Run a sub-block, gradient-checkpointed while training to cap memory.
+
+        ``use_reentrant=False`` is mandatory here: the score-Jacobian VJPs call
+        backward with ``create_graph=True``, so the checkpointed region must
+        support higher-order (double) backward.
+        """
+        if self.use_checkpoint and self.training and torch.is_grad_enabled():
+            return checkpoint(module, *args, use_reentrant=False)
+        return module(*args)
+
     def _spatial_attn(self, h: torch.Tensor) -> torch.Tensor:
         # h: (B, C, H, W) → attend over H*W flattened spatial tokens
         B, C, H, W = h.shape
@@ -176,10 +196,10 @@ class DiffBackbone2D(nn.Module):
         return z.transpose(1, 2).view(B, C, H, W)
 
     def _encode(self, x: torch.Tensor, temb: torch.Tensor):
-        h = self.stem(x, temb)  # (B, base, T, F)
+        h = self._run(self.stem, x, temb)  # (B, base, T, F)
         skips = [h]
         for down in self.downs:
-            h = down(h, temb)
+            h = self._run(down, h, temb)
             skips.append(h)
         h = self._spatial_attn(h)
         return h, skips
@@ -193,7 +213,7 @@ class DiffBackbone2D(nn.Module):
         temb = self._temb(t)
         h, skips = self._encode(x, temb)
         for up, skip in zip(self.ups, reversed(skips[:-1])):
-            h = up(h, skip, temb)
+            h = self._run(up, h, skip, temb)
         return self.out(h)
 
 
@@ -219,7 +239,13 @@ class ScoreJacobLOB(nn.Module):
         hidden = config.get("sjl_head_hidden", 128)
 
         self.bin = BiN(T, F_dim)
-        self.backbone = DiffBackbone2D(base, depth, temb_dim, heads)
+        self.backbone = DiffBackbone2D(
+            base,
+            depth,
+            temb_dim,
+            heads,
+            use_checkpoint=config.get("sjl_grad_checkpoint", True),
+        )
 
         self.t_star = list(config.get("sjl_t_star", [20, 50, 100]))
         self.repr_t = int(config.get("sjl_repr_t", 0))
