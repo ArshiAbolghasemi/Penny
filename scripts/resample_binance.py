@@ -13,7 +13,7 @@ Output directory: data/resampled/
 
 Usage
 -----
-    uv run python scripts/resample_binance.py
+    uv run python scripts/resample_binance.py --interval 0.25
     uv run python scripts/resample_binance.py --interval 10 --levels 10
     uv run python scripts/resample_binance.py --date 2026-06-09
     uv run python scripts/resample_binance.py --data-dir data/binance.bak
@@ -37,8 +37,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
-def _bin_col(ts_us: pd.Series, interval_s: int) -> pd.Series:
-    interval_us = interval_s * 1_000_000
+def _bin_col(ts_us: pd.Series, interval_s: float) -> pd.Series:
+    interval_us = int(interval_s * 1_000_000)
     return (ts_us // interval_us) * interval_us
 
 
@@ -72,7 +72,7 @@ def _lob_cols(n: int) -> list[str]:
 # ── per-file resamplers ────────────────────────────────────────────────────────
 
 
-def _resample_snapshot(path: Path, interval_s: int, n_levels: int) -> pd.DataFrame:
+def _resample_snapshot(path: Path, interval_s: float, n_levels: int) -> pd.DataFrame:
     header_cols = set(pd.read_csv(path, nrows=0).columns)
     usecols = ["timestamp"] + [c for c in _lob_cols(n_levels) if c in header_cols]
     df = pd.read_csv(path, usecols=usecols, dtype=np.float64)
@@ -89,7 +89,7 @@ def _resample_snapshot(path: Path, interval_s: int, n_levels: int) -> pd.DataFra
     return result
 
 
-def _resample_trades(path: Path, interval_s: int) -> pd.DataFrame:
+def _resample_trades(path: Path, interval_s: float) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(
             columns=[
@@ -132,7 +132,7 @@ def _resample_trades(path: Path, interval_s: int) -> pd.DataFrame:
     return agg.drop(columns=["vwap_num", "total_vol"])
 
 
-def _resample_quotes(path: Path, interval_s: int) -> pd.DataFrame:
+def _resample_quotes(path: Path, interval_s: float) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(
             columns=[
@@ -173,7 +173,7 @@ def _resample_quotes(path: Path, interval_s: int) -> pd.DataFrame:
 
 
 def _process_day(
-    data_dir: Path, date: str, symbol: str, interval_s: int, n_levels: int
+    data_dir: Path, date: str, symbol: str, interval_s: float, n_levels: int
 ) -> pd.DataFrame:
     snap = _resample_snapshot(
         data_dir / f"binance_book_snapshot_25_{date}_{symbol}.csv.gz",
@@ -205,7 +205,10 @@ def main() -> None:
         description="Resample Binance data to fixed intervals, one file per symbol."
     )
     parser.add_argument(
-        "--interval", type=int, default=10, help="Bin size in seconds (default: 10)"
+        "--interval",
+        type=float,
+        default=0.25,
+        help="Bin size in seconds (default: 0.25)",
     )
     parser.add_argument(
         "--levels", type=int, default=10, help="LOB depth levels to keep (default: 10)"
