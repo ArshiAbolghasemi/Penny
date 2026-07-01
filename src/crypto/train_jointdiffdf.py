@@ -1,16 +1,22 @@
-"""Train JointDiffusionDF (Diffusion Forcing) on crypto LOB data.
+"""Train JointDiffusionDF as a *consistency model* with Diffusion Forcing.
 
-Same joint objective as JointDiffusion, but each timestep of the window gets its
-own independent noise level (Diffusion Forcing, Chen et al., 2024):
+Combines Consistency Training (no teacher/distillation) with Diffusion Forcing:
+every timestep of the window gets its *own independent* pair of adjacent Karras
+noise levels, and the network is trained to be self-consistent per timestep while
+jointly classifying the trend:
 
-       t  ~  U{0, T_max}^(B×T)          # independent per-timestep noise levels
-       x_t = sqrt(ᾱ_t) * x0 + sqrt(1-ᾱ_t) * noise   (applied per timestep)
-       L   = MSE(eps_hat, noise) + lambda_trend * w(t̄) * CE(logits, label)
-        w(t̄) = (1 - t̄/T_max)^2   when trend_taper else 1   (t̄ = per-sample mean t)
+    L = L_consistency + lambda_trend * CE(logits, label)
+
+    L_consistency = mean_over(B,T) [ lambda(sigma_n) * PseudoHuber(
+                        f_theta (x0 + sigma_{n+1} z, sigma_{n+1}),
+                        f_theta-(x0 + sigma_n     z, sigma_n) ) ]
+
+with per-timestep sigma pairs, shared noise z, and ``theta-`` = online weights with
+stop-gradient (improved CT).  Classification logits come from the online pass.
 
 Usage::
 
-    uv run python -m crypto.train_jointdiffdf configs/crypto/nobitex/jointdiffdf/btcirt_ofi.json
+    uv run python -m crypto.train_jointdiffdf configs/crypto/nobitex/jointdiffdf/btcirt_ofi_k10.json
 """
 
 from __future__ import annotations
@@ -32,7 +38,14 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
 from crypto.dataset import build_datasets
+from models.consistency import (
+    interval_weights,
+    karras_sigmas,
+    pseudo_huber_const,
+)
+from models.jointdiffdf import JointDiffusionDF, count_parameters
 from utils.evaluate import run_test
+from utils.flops import log_gflops
 from utils.training import (
     build_cosine_schedule,
     resolve_device,
@@ -40,33 +53,38 @@ from utils.training import (
     seed_worker,
     set_seed,
 )
-from models.jointdiffdf import JointDiffusionDF, count_parameters
 
 
-def _train_epoch(model, loader, optimizer, lr_sched, config, device, t_max):
+def _train_epoch(model, loader, optimizer, lr_sched, config, device, cm):
     model.train()
-    lam = config.get("lambda_trend", 1.0)
-    trend_taper = config.get("trend_taper", False)
+    lam_cls = config.get("lambda_trend", 1.0)
     grad_clip = config.get("grad_clip", 1.0)
-    tot = dif = trd = 0.0
+    sigmas, weights, huber_c = cm["sigmas"], cm["weights"], cm["huber_c"]
+    tot = con = cls = 0.0
     n = 0
     for batch in loader:
         x0 = batch["x"].to(device).float()  # (B, 1, T, F)
         label = batch["label"].to(device)
         b, _, T, _ = x0.shape
-        # Diffusion Forcing: independent noise level per timestep.
-        t = torch.randint(0, t_max, (b, T), device=device)
-        noise = torch.randn_like(x0)
-        x_t = model.add_noise(x0, noise, t)
 
-        eps_hat, logits = model(x_t, t)
-        diff_loss = F.mse_loss(eps_hat, noise)
-        if trend_taper:
-            w = (1.0 - t.float().mean(dim=1) / t_max) ** 2  # (B,) from mean level
-        else:
-            w = 1.0
-        cls_loss = (w * F.cross_entropy(logits, label, reduction="none")).mean()
-        loss = diff_loss + lam * cls_loss
+        # Diffusion Forcing: independent adjacent Karras pair per (sample, timestep).
+        idx = torch.multinomial(weights, b * T, replacement=True).view(b, T)
+        sig_lo, sig_hi = sigmas[idx], sigmas[idx + 1]  # (B, T)
+        z = torch.randn_like(x0)
+        x_hi = x0 + sig_hi[:, None, :, None] * z
+        x_lo = x0 + sig_lo[:, None, :, None] * z
+
+        x0_hi, logits = model.denoise(x_hi, sig_hi)  # online (higher noise)
+        with torch.no_grad():
+            x0_lo, _ = model.denoise(x_lo, sig_lo)  # target (stop-grad, same weights)
+
+        # Pseudo-Huber per timestep (reduce over channel + feature axes).
+        se = ((x0_hi - x0_lo) ** 2).sum(dim=(1, 3))  # (B, T)
+        d = torch.sqrt(se + huber_c**2) - huber_c  # (B, T)
+        lam = 1.0 / (sig_hi - sig_lo)  # (B, T)
+        con_loss = (lam * d).mean()
+        cls_loss = F.cross_entropy(logits, label)
+        loss = con_loss + lam_cls * cls_loss
 
         optimizer.zero_grad()
         loss.backward()
@@ -74,11 +92,11 @@ def _train_epoch(model, loader, optimizer, lr_sched, config, device, t_max):
         optimizer.step()
         lr_sched.step()
         tot += loss.item()
-        dif += diff_loss.item()
-        trd += cls_loss.item()
+        con += con_loss.item()
+        cls += cls_loss.item()
         n += 1
     n = max(n, 1)
-    return {"total": tot / n, "diff": dif / n, "trend": trd / n}
+    return {"total": tot / n, "consistency": con / n, "trend": cls / n}
 
 
 @torch.no_grad()
@@ -99,7 +117,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/jointdiffdf/btcirt_ofi.json",
+        default="configs/crypto/nobitex/jointdiffdf/btcirt_ofi_k10.json",
     )
     args = parser.parse_args()
 
@@ -108,17 +126,17 @@ def main() -> None:
         logger.error("config not found: {}", config_path)
         sys.exit(1)
     config = json.loads(config_path.read_text())
+    config["cm_enabled"] = True  # consistency-model predict path
 
     seed = resolve_seed(config)
     config["seed"] = seed
     generator = set_seed(seed)
 
     device = resolve_device(config["device"])
-    t_max = config.get("T_max", 1000)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     ckpt_dir = (
         Path(config["checkpoint_dir"])
-        / f"jointdiffdf_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
+        / f"jointdiffdf_cm_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     logger.add(ckpt_dir / "train.log", level="DEBUG")
@@ -128,7 +146,7 @@ def main() -> None:
     cb = meta["class_balance"]
 
     logger.info(
-        "JointDiffusionDF  symbol={}  mode={}",
+        "JointDiffusionDF (consistency + diffusion forcing)  symbol={}  mode={}",
         config["symbol"],
         config.get("feature_mode"),
     )
@@ -142,9 +160,28 @@ def main() -> None:
     )
 
     model = JointDiffusionDF(config).to(device)
+
+    n_scales = config.get("cm_num_scales", 40)
+    sigmas = karras_sigmas(
+        n_scales,
+        config.get("cm_sigma_min", 0.002),
+        config.get("cm_sigma_max", 80.0),
+        config.get("cm_rho", 7.0),
+        device=device,
+    )
+    weights = interval_weights(
+        sigmas, config.get("cm_p_mean", -1.1), config.get("cm_p_std", 2.0)
+    )
+    # Per-timestep Pseudo-Huber: each timestep slice has n_features elements.
+    huber_c = pseudo_huber_const(config["n_features"])
+    cm = {"sigmas": sigmas, "weights": weights, "huber_c": huber_c}
+
+    gflops = log_gflops(model, train_ds, device)
     logger.info(
-        "  params={:.2f}M  lambda_trend={}  device={}",
+        "  params={:.2f}M  gflops/sample={:.3f}  N_scales={}  lambda_trend={}  device={}",
         count_parameters(model) / 1e6,
+        gflops,
+        n_scales,
         config.get("lambda_trend", 1.0),
         device,
     )
@@ -170,15 +207,14 @@ def main() -> None:
 
     best, patience, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
-        tr = _train_epoch(
-            model, train_loader, optimizer, lr_sched, config, device, t_max
-        )
+        tr = _train_epoch(model, train_loader, optimizer, lr_sched, config, device, cm)
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
-            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} acc={:.4f}",
+            "epoch {} | total={:.4f} consistency={:.4f} trend={:.4f}"
+            " | val_ce={:.4f} acc={:.4f}",
             epoch,
             tr["total"],
-            tr["diff"],
+            tr["consistency"],
             tr["trend"],
             val_ce,
             val_acc,

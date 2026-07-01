@@ -1,12 +1,22 @@
-"""Train JointDiffusion on crypto LOB data.
+"""Train JointDiffusion as a *consistency model* (Consistency Training, no teacher).
 
-   Joint objective (Deja et al., 2023):
-       L = MSE(eps_hat, noise) + lambda_trend * w(t) * CE(logits, label)
-        w(t) = (1 - t/T_max)^2   when trend_taper else 1
+The backbone is trained jointly to (a) act as a consistency function that maps a
+noised LOB window back to the clean window and (b) classify the trend:
+
+    L = L_consistency + lambda_trend * CE(logits, label)
+
+    L_consistency = lambda(sigma_n) * PseudoHuber(
+                        f_theta (x0 + sigma_{n+1} z, sigma_{n+1}),
+                        f_theta-(x0 + sigma_n     z, sigma_n) )
+
+over adjacent Karras noise levels sigma_n < sigma_{n+1} sharing noise z; ``theta-``
+is the online weights with stop-gradient (improved CT, no EMA / no distillation).
+lambda(sigma_n) = 1/(sigma_{n+1}-sigma_n).  Classification logits are read from the
+online (higher-noise) pass.
 
 Usage::
 
-    uv run python -m crypto.train_jointdiff configs/crypto/binance/jointdiff/btcusdt_ofi.json
+    uv run python -m crypto.train_jointdiff configs/crypto/nobitex/jointdiff/btcirt_ofi_k10.json
 """
 
 from __future__ import annotations
@@ -23,13 +33,19 @@ os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 
 import torch
 import torch.nn.functional as F
-from models.ddpm import DDPMScheduler
 from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
 from crypto.dataset import build_datasets
+from models.consistency import (
+    interval_weights,
+    karras_sigmas,
+    pseudo_huber_const,
+)
+from models.jointdiff import JointDiffusion, count_parameters
 from utils.evaluate import run_test
+from utils.flops import log_gflops
 from utils.training import (
     build_cosine_schedule,
     resolve_device,
@@ -37,33 +53,38 @@ from utils.training import (
     seed_worker,
     set_seed,
 )
-from models.jointdiff import JointDiffusion, count_parameters
 
 
-def _train_epoch(model, sched, loader, optimizer, lr_sched, config, device):
+def _train_epoch(model, loader, optimizer, lr_sched, config, device, cm):
     model.train()
-    t_max = sched.config.num_train_timesteps
-    lam = config.get("lambda_trend", 1.0)
-    trend_taper = config.get("trend_taper", False)
+    lam_cls = config.get("lambda_trend", 1.0)
     grad_clip = config.get("grad_clip", 1.0)
-    tot = dif = trd = 0.0
+    sigmas, weights, huber_c = cm["sigmas"], cm["weights"], cm["huber_c"]
+    tot = con = cls = 0.0
     n = 0
     for batch in loader:
-        x0 = batch["x"].to(device).float()
+        x0 = batch["x"].to(device).float()  # (B, 1, T, F)
         label = batch["label"].to(device)
         b = x0.shape[0]
-        t = torch.randint(0, t_max, (b,), device=device)
-        noise = torch.randn_like(x0)
-        x_t = sched.add_noise(x0, noise, t)
 
-        eps_hat, logits = model(x_t, t)
-        diff_loss = F.mse_loss(eps_hat, noise)
-        if trend_taper:
-            w = (1.0 - t.float() / t_max) ** 2
-        else:
-            w = 1.0
-        cls_loss = (w * F.cross_entropy(logits, label, reduction="none")).mean()
-        loss = diff_loss + lam * cls_loss
+        # Adjacent Karras levels per sample, shared noise z.
+        idx = torch.multinomial(weights, b, replacement=True)  # in [0, N-2]
+        sig_lo, sig_hi = sigmas[idx], sigmas[idx + 1]  # (B,)
+        z = torch.randn_like(x0)
+        v = (-1,) + (1,) * (x0.dim() - 1)
+        x_hi = x0 + sig_hi.view(v) * z
+        x_lo = x0 + sig_lo.view(v) * z
+
+        x0_hi, logits = model.denoise(x_hi, sig_hi)  # online (higher noise)
+        with torch.no_grad():
+            x0_lo, _ = model.denoise(x_lo, sig_lo)  # target (stop-grad, same weights)
+
+        diff = (x0_hi - x0_lo).flatten(1)
+        d = torch.sqrt((diff**2).sum(1) + huber_c**2) - huber_c  # Pseudo-Huber (B,)
+        lam = 1.0 / (sig_hi - sig_lo)  # (B,)
+        con_loss = (lam * d).mean()
+        cls_loss = F.cross_entropy(logits, label)
+        loss = con_loss + lam_cls * cls_loss
 
         optimizer.zero_grad()
         loss.backward()
@@ -71,11 +92,11 @@ def _train_epoch(model, sched, loader, optimizer, lr_sched, config, device):
         optimizer.step()
         lr_sched.step()
         tot += loss.item()
-        dif += diff_loss.item()
-        trd += cls_loss.item()
+        con += con_loss.item()
+        cls += cls_loss.item()
         n += 1
     n = max(n, 1)
-    return {"total": tot / n, "diff": dif / n, "trend": trd / n}
+    return {"total": tot / n, "consistency": con / n, "trend": cls / n}
 
 
 @torch.no_grad()
@@ -96,7 +117,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/binance/jointdiff/btcusdt_ofi.json",
+        default="configs/crypto/nobitex/jointdiff/btcirt_ofi_k10.json",
     )
     args = parser.parse_args()
 
@@ -105,6 +126,7 @@ def main() -> None:
         logger.error("config not found: {}", config_path)
         sys.exit(1)
     config = json.loads(config_path.read_text())
+    config["cm_enabled"] = True  # consistency-model predict path
 
     seed = resolve_seed(config)
     config["seed"] = seed
@@ -114,7 +136,7 @@ def main() -> None:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     ckpt_dir = (
         Path(config["checkpoint_dir"])
-        / f"jointdiff_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
+        / f"jointdiff_cm_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     logger.add(ckpt_dir / "train.log", level="DEBUG")
@@ -124,7 +146,7 @@ def main() -> None:
     cb = meta["class_balance"]
 
     logger.info(
-        "JointDiffusion  symbol={}  mode={}",
+        "JointDiffusion (consistency)  symbol={}  mode={}",
         config["symbol"],
         config.get("feature_mode"),
     )
@@ -137,17 +159,29 @@ def main() -> None:
         cb["up"],
     )
 
-    noise_sched = DDPMScheduler(
-        num_train_timesteps=config.get("T_max", 1000),
-        beta_start=config.get("beta_start", 1e-4),
-        beta_end=config.get("beta_end", 0.02),
-        beta_schedule="linear",
-        clip_sample=False,
-    )
     model = JointDiffusion(config).to(device)
+
+    # Consistency-training schedule (Karras sigmas + improved-CT lognormal sampling).
+    n_scales = config.get("cm_num_scales", 40)
+    sigmas = karras_sigmas(
+        n_scales,
+        config.get("cm_sigma_min", 0.002),
+        config.get("cm_sigma_max", 80.0),
+        config.get("cm_rho", 7.0),
+        device=device,
+    )
+    weights = interval_weights(
+        sigmas, config.get("cm_p_mean", -1.1), config.get("cm_p_std", 2.0)
+    )
+    huber_c = pseudo_huber_const(config["T_past"] * config["n_features"])
+    cm = {"sigmas": sigmas, "weights": weights, "huber_c": huber_c}
+
+    gflops = log_gflops(model, train_ds, device)
     logger.info(
-        "  params={:.2f}M  lambda_trend={}  device={}",
+        "  params={:.2f}M  gflops/sample={:.3f}  N_scales={}  lambda_trend={}  device={}",
         count_parameters(model) / 1e6,
+        gflops,
+        n_scales,
         config.get("lambda_trend", 1.0),
         device,
     )
@@ -173,15 +207,14 @@ def main() -> None:
 
     best, patience, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
-        tr = _train_epoch(
-            model, noise_sched, train_loader, optimizer, lr_sched, config, device
-        )
+        tr = _train_epoch(model, train_loader, optimizer, lr_sched, config, device, cm)
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
-            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} acc={:.4f}",
+            "epoch {} | total={:.4f} consistency={:.4f} trend={:.4f}"
+            " | val_ce={:.4f} acc={:.4f}",
             epoch,
             tr["total"],
-            tr["diff"],
+            tr["consistency"],
             tr["trend"],
             val_ce,
             val_acc,

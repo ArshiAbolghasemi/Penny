@@ -28,16 +28,18 @@ class BiN(nn.Module):
         super().__init__()
         self.eps = eps
         self.gamma_t = nn.Parameter(torch.ones(F))
-        self.beta_t  = nn.Parameter(torch.zeros(F))
+        self.beta_t = nn.Parameter(torch.zeros(F))
         self.gamma_f = nn.Parameter(torch.ones(T))
-        self.beta_f  = nn.Parameter(torch.zeros(T))
-        self.mix     = nn.Parameter(torch.zeros(2))
+        self.beta_f = nn.Parameter(torch.zeros(T))
+        self.mix = nn.Parameter(torch.zeros(2))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, T, F)
-        mt = x.mean(1, keepdim=True); st = x.std(1, keepdim=True) + self.eps
+        mt = x.mean(1, keepdim=True)
+        st = x.std(1, keepdim=True) + self.eps
         xt = (x - mt) / st * self.gamma_t + self.beta_t
-        mf = x.mean(2, keepdim=True); sf = x.std(2, keepdim=True) + self.eps
+        mf = x.mean(2, keepdim=True)
+        sf = x.std(2, keepdim=True) + self.eps
         xf = (x - mf) / sf * self.gamma_f[None, :, None] + self.beta_f[None, :, None]
         w = torch.softmax(self.mix, 0)
         return w[0] * xt + w[1] * xf
@@ -142,7 +144,16 @@ class JointDiffusion(nn.Module):
             nn.Linear(bottleneck, 3),
         )
 
+        # Consistency-model (EDM) parameters — only used when trained as a
+        # consistency model (cm_enabled); forward() is left unchanged so DDPM
+        # trainers keep working.
+        self.sigma_data = float(config.get("cm_sigma_data", 0.5))
+        self.sigma_min = float(config.get("cm_sigma_min", 0.002))
+        self.consistency = bool(config.get("cm_enabled", False))
+
     def forward(self, x_t: torch.Tensor, t: torch.Tensor):
+        # t carries the timestep (DDPM) or c_noise (consistency); both are handled
+        # identically by the sinusoidal embedding, which accepts float inputs.
         if self.bin is not None:
             x_t = self.bin(x_t.squeeze(1)).unsqueeze(1)
         temb = self.time_mlp(sinusoidal_embedding(t, self.temb_dim))
@@ -156,11 +167,26 @@ class JointDiffusion(nn.Module):
             x = up(x, skip, temb)
         return self.out_conv(x), logits
 
+    def denoise(self, x: torch.Tensor, sigma: torch.Tensor):
+        """Consistency function f_theta(x, sigma) -> (x0_hat, logits). sigma: (B,)."""
+        from models.consistency import precond
+
+        c_skip, c_out, c_in, c_noise = precond(sigma, self.sigma_data, self.sigma_min)
+        v = (-1,) + (1,) * (x.dim() - 1)  # (B,1,1,1)
+        raw, logits = self(c_in.view(v) * x, c_noise)
+        x0 = c_skip.view(v) * x + c_out.view(v) * raw
+        return x0, logits
+
     @torch.no_grad()
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         x = batch["x"].to(device).float()
-        t = torch.zeros(x.shape[0], dtype=torch.long, device=device)
-        _, logits = self(x, t)
+        b = x.shape[0]
+        if self.consistency:
+            sigma = torch.full((b,), self.sigma_min, device=device)
+            _, logits = self.denoise(x, sigma)
+        else:
+            t = torch.zeros(b, dtype=torch.long, device=device)
+            _, logits = self(x, t)
         return logits
 
 

@@ -136,6 +136,12 @@ class JointDiffusionDF(nn.Module):
         self.register_buffer("sqrt_ab", ab.sqrt())
         self.register_buffer("sqrt_1mab", (1.0 - ab).sqrt())
 
+        # Consistency-model (EDM) parameters — used only when cm_enabled; the DDPM
+        # add_noise/forward paths above are left intact for backward compat.
+        self.sigma_data = float(config.get("cm_sigma_data", 0.5))
+        self.sigma_min = float(config.get("cm_sigma_min", 0.002))
+        self.consistency = bool(config.get("cm_enabled", False))
+
     def add_noise(
         self, x0: torch.Tensor, noise: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
@@ -164,11 +170,34 @@ class JointDiffusionDF(nn.Module):
             x = up(x, skip, temb_seq)
         return self.out_conv(x), logits
 
+    def denoise(self, x: torch.Tensor, sigma: torch.Tensor):
+        """Consistency function f_theta(x, sigma) -> (x0_hat, logits).
+
+        Diffusion Forcing: ``sigma`` is per-timestep ``(B, T)``; coefficients
+        broadcast as ``(B, 1, T, 1)`` over channel and feature axes, and c_noise
+        ``(B, T)`` feeds the per-timestep conditioning path of ``forward``.
+        """
+        from models.consistency import precond
+
+        c_skip, c_out, c_in, c_noise = precond(sigma, self.sigma_data, self.sigma_min)
+
+        def bt(c: torch.Tensor) -> torch.Tensor:
+            return c[:, None, :, None]
+
+        raw, logits = self(bt(c_in) * x, c_noise)
+        x0 = bt(c_skip) * x + bt(c_out) * raw
+        return x0, logits
+
     @torch.no_grad()
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         x = batch["x"].to(device).float()
-        t = torch.zeros(x.shape[0], x.shape[2], dtype=torch.long, device=device)
-        _, logits = self(x, t)
+        b, T = x.shape[0], x.shape[2]
+        if self.consistency:
+            sigma = torch.full((b, T), self.sigma_min, device=device)
+            _, logits = self.denoise(x, sigma)
+        else:
+            t = torch.zeros(b, T, dtype=torch.long, device=device)
+            _, logits = self(x, t)
         return logits
 
 

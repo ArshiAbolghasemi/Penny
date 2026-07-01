@@ -32,6 +32,7 @@ from torch.utils.data import DataLoader
 
 from crypto.dataset import build_datasets
 from utils.evaluate import run_test
+from utils.flops import log_gflops
 from utils.training import (
     build_cosine_schedule,
     resolve_device,
@@ -153,6 +154,7 @@ def main() -> None:
         config.get("lambda_trend", 1.0),
         device,
     )
+    logger.info("  gflops/sample={:.3f}", log_gflops(model, train_ds, device))
 
     nw = min(4, torch.get_num_threads())
     train_loader = DataLoader(

@@ -33,6 +33,7 @@ from crypto.dataset import build_datasets
 from models.ddpm import DDPMScheduler
 from models.diffclf import DiffusionClassifier, count_parameters
 from utils.evaluate import run_test
+from utils.flops import log_gflops
 from utils.training import (
     build_cosine_schedule,
     resolve_device,
@@ -149,6 +150,7 @@ def main() -> None:
         model.mc_samples,
         device,
     )
+    logger.info("  gflops/sample={:.3f}", log_gflops(model, train_ds, device))
 
     nw = min(4, torch.get_num_threads())
     train_loader = DataLoader(
