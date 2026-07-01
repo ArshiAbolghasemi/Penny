@@ -104,7 +104,7 @@ def _train_epoch(model, loader, optimizer, lr_sched, config, device, drift, bank
         optimizer.step()
         lr_sched.step()
         tot += loss.item()
-        dft += float(dft_loss)
+        dft += dft_loss.item()
         cls += cls_loss.item()
         n += 1
     n = max(n, 1)
