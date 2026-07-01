@@ -1,0 +1,213 @@
+"""Train JointDiffusionDF (Diffusion Forcing) on crypto LOB data.
+
+Same joint objective as JointDiffusion, but each timestep of the window gets its
+own independent noise level (Diffusion Forcing, Chen et al., 2024):
+
+       t  ~  U{0, T_max}^(B×T)          # independent per-timestep noise levels
+       x_t = sqrt(ᾱ_t) * x0 + sqrt(1-ᾱ_t) * noise   (applied per timestep)
+       L   = MSE(eps_hat, noise) + lambda_trend * w(t̄) * CE(logits, label)
+        w(t̄) = (1 - t̄/T_max)^2   when trend_taper else 1   (t̄ = per-sample mean t)
+
+Usage::
+
+    uv run python -m crypto.train_jointdiffdf configs/crypto/nobitex/jointdiffdf/btcirt_ofi.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+
+import torch
+import torch.nn.functional as F
+from loguru import logger
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+
+from crypto.dataset import build_datasets
+from utils.evaluate import run_test
+from utils.training import (
+    build_cosine_schedule,
+    resolve_device,
+    resolve_seed,
+    seed_worker,
+    set_seed,
+)
+from models.jointdiffdf import JointDiffusionDF, count_parameters
+
+
+def _train_epoch(model, loader, optimizer, lr_sched, config, device, t_max):
+    model.train()
+    lam = config.get("lambda_trend", 1.0)
+    trend_taper = config.get("trend_taper", False)
+    grad_clip = config.get("grad_clip", 1.0)
+    tot = dif = trd = 0.0
+    n = 0
+    for batch in loader:
+        x0 = batch["x"].to(device).float()  # (B, 1, T, F)
+        label = batch["label"].to(device)
+        b, _, T, _ = x0.shape
+        # Diffusion Forcing: independent noise level per timestep.
+        t = torch.randint(0, t_max, (b, T), device=device)
+        noise = torch.randn_like(x0)
+        x_t = model.add_noise(x0, noise, t)
+
+        eps_hat, logits = model(x_t, t)
+        diff_loss = F.mse_loss(eps_hat, noise)
+        if trend_taper:
+            w = (1.0 - t.float().mean(dim=1) / t_max) ** 2  # (B,) from mean level
+        else:
+            w = 1.0
+        cls_loss = (w * F.cross_entropy(logits, label, reduction="none")).mean()
+        loss = diff_loss + lam * cls_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
+        lr_sched.step()
+        tot += loss.item()
+        dif += diff_loss.item()
+        trd += cls_loss.item()
+        n += 1
+    n = max(n, 1)
+    return {"total": tot / n, "diff": dif / n, "trend": trd / n}
+
+
+@torch.no_grad()
+def _validate(model, loader, device):
+    model.eval()
+    ce, correct, n = 0.0, 0, 0
+    for batch in loader:
+        label = batch["label"].to(device)
+        logits = model.predict(batch, device)
+        ce += F.cross_entropy(logits, label).item()
+        correct += (logits.argmax(1) == label).sum().item()
+        n += len(label)
+    return ce / max(len(loader), 1), correct / max(n, 1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default="configs/crypto/nobitex/jointdiffdf/btcirt_ofi.json",
+    )
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        logger.error("config not found: {}", config_path)
+        sys.exit(1)
+    config = json.loads(config_path.read_text())
+
+    seed = resolve_seed(config)
+    config["seed"] = seed
+    generator = set_seed(seed)
+
+    device = resolve_device(config["device"])
+    t_max = config.get("T_max", 1000)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ckpt_dir = (
+        Path(config["checkpoint_dir"])
+        / f"jointdiffdf_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
+    )
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    logger.add(ckpt_dir / "train.log", level="DEBUG")
+
+    train_ds, val_ds, test_ds, alpha, meta = build_datasets(config)
+    config["n_features"] = meta["n_features"]
+    cb = meta["class_balance"]
+
+    logger.info(
+        "JointDiffusionDF  symbol={}  mode={}",
+        config["symbol"],
+        config.get("feature_mode"),
+    )
+    logger.info("  windows train={} val={} test={}", *meta["counts"].values())
+    logger.info(
+        "  alpha={:.6f}  down={:.1%} flat={:.1%} up={:.1%}",
+        alpha,
+        cb["down"],
+        cb["stationary"],
+        cb["up"],
+    )
+
+    model = JointDiffusionDF(config).to(device)
+    logger.info(
+        "  params={:.2f}M  lambda_trend={}  device={}",
+        count_parameters(model) / 1e6,
+        config.get("lambda_trend", 1.0),
+        device,
+    )
+
+    nw = min(4, torch.get_num_threads())
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        num_workers=nw,
+        pin_memory=(device.type == "cuda"),
+        worker_init_fn=seed_worker,
+        generator=generator,
+    )
+    val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
+
+    optimizer = AdamW(
+        model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
+    )
+    lr_sched = build_cosine_schedule(
+        optimizer, config, config["epochs"] * len(train_loader)
+    )
+
+    best, patience, history = float("inf"), 0, []
+    for epoch in range(config["epochs"]):
+        tr = _train_epoch(
+            model, train_loader, optimizer, lr_sched, config, device, t_max
+        )
+        val_ce, val_acc = _validate(model, val_loader, device)
+        logger.info(
+            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} acc={:.4f}",
+            epoch,
+            tr["total"],
+            tr["diff"],
+            tr["trend"],
+            val_ce,
+            val_acc,
+        )
+        history.append({"epoch": epoch, **tr, "val_ce": val_ce, "val_acc": val_acc})
+
+        if val_ce < best:
+            best, patience = val_ce, 0
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "config": config,
+                    "alpha": alpha,
+                    "epoch": epoch,
+                },
+                ckpt_dir / "best.pt",
+            )
+        else:
+            patience += 1
+            if patience >= config["patience"]:
+                logger.info("early stopping at epoch {}", epoch)
+                break
+
+    (ckpt_dir / "config.json").write_text(json.dumps(config, indent=2))
+    (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
+    ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model"])
+    run_test(model, test_ds, config, device)
+
+
+if __name__ == "__main__":
+    main()
