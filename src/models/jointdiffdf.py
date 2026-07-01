@@ -119,7 +119,7 @@ class JointDiffusionDF(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(bottleneck, bottleneck),
-            nn.SiLU(),
+            nn.GELU(),
             nn.Dropout(config.get("jd_dropout", 0.1)),
             nn.Linear(bottleneck, 3),
         )
