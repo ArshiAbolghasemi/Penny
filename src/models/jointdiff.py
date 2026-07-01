@@ -16,6 +16,33 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class BiN(nn.Module):
+    """Bilinear normalisation applied to (B, T, F) before the U-Net.
+
+    Learns a softmax-weighted convex mix of:
+      - temporal branch: z-score each feature across T
+      - feature  branch: z-score each timestep across F
+    """
+
+    def __init__(self, T: int, F: int, eps: float = 1e-5) -> None:
+        super().__init__()
+        self.eps = eps
+        self.gamma_t = nn.Parameter(torch.ones(F))
+        self.beta_t  = nn.Parameter(torch.zeros(F))
+        self.gamma_f = nn.Parameter(torch.ones(T))
+        self.beta_f  = nn.Parameter(torch.zeros(T))
+        self.mix     = nn.Parameter(torch.zeros(2))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, F)
+        mt = x.mean(1, keepdim=True); st = x.std(1, keepdim=True) + self.eps
+        xt = (x - mt) / st * self.gamma_t + self.beta_t
+        mf = x.mean(2, keepdim=True); sf = x.std(2, keepdim=True) + self.eps
+        xf = (x - mf) / sf * self.gamma_f[None, :, None] + self.beta_f[None, :, None]
+        w = torch.softmax(self.mix, 0)
+        return w[0] * xt + w[1] * xf
+
+
 def sinusoidal_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
     half = dim // 2
     freqs = torch.exp(
@@ -88,6 +115,10 @@ class JointDiffusion(nn.Module):
         temb_dim = config.get("jd_time_emb", 128)
         self.temb_dim = temb_dim
 
+        T = config.get("T_past")
+        F_dim = config.get("n_features")
+        self.bin = BiN(T, F_dim) if (T and F_dim) else None
+
         self.time_mlp = nn.Sequential(
             nn.Linear(temb_dim, temb_dim), nn.SiLU(), nn.Linear(temb_dim, temb_dim)
         )
@@ -112,6 +143,8 @@ class JointDiffusion(nn.Module):
         )
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor):
+        if self.bin is not None:
+            x_t = self.bin(x_t.squeeze(1)).unsqueeze(1)
         temb = self.time_mlp(sinusoidal_embedding(t, self.temb_dim))
         x = self.stem(x_t, temb)
         skips = [x]

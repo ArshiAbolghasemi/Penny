@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.jointdiff import _groups, sinusoidal_embedding
+from models.jointdiff import BiN, _groups, sinusoidal_embedding
 
 
 class SeqTimeDoubleConv(nn.Module):
@@ -97,6 +97,10 @@ class JointDiffusionDF(nn.Module):
         temb_dim = config.get("jd_time_emb", 128)
         self.temb_dim = temb_dim
 
+        T = config.get("T_past")
+        F_dim = config.get("n_features")
+        self.bin = BiN(T, F_dim) if (T and F_dim) else None
+
         self.time_mlp = nn.Sequential(
             nn.Linear(temb_dim, temb_dim), nn.SiLU(), nn.Linear(temb_dim, temb_dim)
         )
@@ -147,6 +151,8 @@ class JointDiffusionDF(nn.Module):
         return self.time_mlp(emb)
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor):
+        if self.bin is not None:
+            x_t = self.bin(x_t.squeeze(1)).unsqueeze(1)
         temb_seq = self._temb_seq(t)
         x = self.stem(x_t, temb_seq)
         skips = [x]
