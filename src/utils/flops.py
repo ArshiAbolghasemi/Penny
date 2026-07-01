@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import torch
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.flop_counter import FlopCounterMode
 
 
 @torch.no_grad()
 def measure_gflops(model, batch: dict, device: torch.device) -> float:
     """Total GFLOPs of one ``model.predict(batch, device)`` call."""
-    from torch.utils.flop_counter import FlopCounterMode
-
     was_training = model.training
     model.eval()
     counter = FlopCounterMode(display=False)
