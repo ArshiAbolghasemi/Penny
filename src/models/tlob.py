@@ -28,7 +28,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from models.modules import BiN, count_parameters as count_parameters  # noqa: F401
+from models.modules import BiN, count_parameters as count_parameters  # re-export
 
 
 # ── Positional encoding ───────────────────────────────────────────────────────
@@ -163,5 +163,3 @@ class TLOB(nn.Module):
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         return self(batch["x"].to(device).float())
-
-

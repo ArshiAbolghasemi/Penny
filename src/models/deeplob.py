@@ -96,5 +96,3 @@ class DeepLOB(nn.Module):
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         return self(batch["x"].to(device).float())
-
-

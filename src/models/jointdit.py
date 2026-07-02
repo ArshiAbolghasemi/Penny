@@ -24,7 +24,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.modules import sinusoidal_embedding
+from models.modules import (
+    count_parameters as count_parameters,  # re-export
+    sinusoidal_embedding,
+)
 
 
 def _modulate(
@@ -157,6 +160,3 @@ class JointDiT(nn.Module):
         t = torch.zeros(x.shape[0], dtype=torch.long, device=device)
         _, logits = self(x, t)
         return logits
-
-
-from models.modules import count_parameters as count_parameters  # re-export

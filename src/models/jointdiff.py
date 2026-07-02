@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from models.modules import (
     BiN,
     Down,
     TimeDoubleConv,
     Up,
-    _groups,
+    count_parameters as count_parameters,  # re-export
     sinusoidal_embedding,
 )
 
@@ -106,6 +105,3 @@ class JointDiffusion(nn.Module):
             t = torch.zeros(b, dtype=torch.long, device=device)
             _, logits = self(x, t)
         return logits
-
-
-from models.modules import count_parameters as count_parameters  # re-export

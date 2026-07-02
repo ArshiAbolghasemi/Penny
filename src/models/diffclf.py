@@ -35,7 +35,13 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from models.modules import Down, TimeDoubleConv, Up, sinusoidal_embedding
+from models.modules import (
+    Down,
+    TimeDoubleConv,
+    Up,
+    count_parameters as count_parameters,  # re-export
+    sinusoidal_embedding,
+)
 
 
 class DiffusionClassifier(nn.Module):
@@ -180,6 +186,3 @@ class DiffusionClassifier(nn.Module):
             log_ratios += err_u.unsqueeze(1) - err_c
 
         return log_ratios / K  # (B, 3)
-
-
-from models.modules import count_parameters as count_parameters  # re-export

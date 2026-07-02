@@ -29,7 +29,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.modules import BiN, _groups, sinusoidal_embedding
+from models.modules import (
+    BiN,
+    _groups,
+    count_parameters as count_parameters,  # re-export
+    sinusoidal_embedding,
+)
 
 
 class SeqTimeDoubleConv(nn.Module):
@@ -199,6 +204,3 @@ class JointDiffusionDF(nn.Module):
             t = torch.zeros(b, T, dtype=torch.long, device=device)
             _, logits = self(x, t)
         return logits
-
-
-from models.modules import count_parameters as count_parameters  # re-export

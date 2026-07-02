@@ -31,7 +31,13 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from models.modules import Down, TimeDoubleConv, Up, sinusoidal_embedding
+from models.modules import (
+    Down,
+    TimeDoubleConv,
+    Up,
+    count_parameters as count_parameters,  # re-export
+    sinusoidal_embedding,
+)
 
 
 class JointDiffCFG(nn.Module):
@@ -98,6 +104,3 @@ class JointDiffCFG(nn.Module):
         t = torch.zeros(x.shape[0], dtype=torch.long, device=device)
         _, logits = self(x, t, asset)
         return logits
-
-
-from models.modules import count_parameters as count_parameters  # re-export
