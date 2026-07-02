@@ -44,6 +44,30 @@ class BiN(nn.Module):
         return w[0] * xt + w[1] * xf
 
 
+# ── Attention pooling ──────────────────────────────────────────────────────────
+
+
+class AttentionPool(nn.Module):
+    """Single learned query attends over a (B, N, D) sequence -> (B, D).
+
+    Drop-in replacement for ``x.mean(dim=1)`` / ``AdaptiveAvgPool2d(1)`` before
+    a classification head — same input/output shape contract, but the summary
+    vector is a learned weighted combination of tokens instead of a uniform one.
+    """
+
+    def __init__(self, dim: int, heads: int = 4, dropout: float = 0.0) -> None:
+        super().__init__()
+        self.query = nn.Parameter(torch.randn(1, 1, dim) * 0.02)
+        self.attn = nn.MultiheadAttention(
+            dim, heads, dropout=dropout, batch_first=True
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        q = self.query.expand(x.shape[0], -1, -1)
+        out, _ = self.attn(q, x, x, need_weights=False)
+        return out.squeeze(1)
+
+
 # ── Sinusoidal time embedding ─────────────────────────────────────────────────
 
 
