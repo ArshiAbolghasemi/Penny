@@ -9,7 +9,10 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from models.modules import count_parameters as count_parameters  # re-export
+from models.modules import (
+    AttentionPool,
+    count_parameters as count_parameters,  # re-export
+)
 
 
 class LOBTransformer(nn.Module):
@@ -24,6 +27,7 @@ class LOBTransformer(nn.Module):
         d = config.get("lobt_hidden", 256)
         heads = config.get("lobt_heads", 8)
         layers = config.get("lobt_layers", 4)
+        pool_heads = config.get("lobt_pool_heads", 4)
 
         self.input_proj = nn.Linear(n_features, d)
         self.pos = nn.Parameter(torch.randn(1, self.t_past, d) * 0.02)
@@ -35,13 +39,14 @@ class LOBTransformer(nn.Module):
             batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(enc, num_layers=layers)
-        self.head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, 3))
+        self.pool = AttentionPool(d, heads=pool_heads)
+        self.head = nn.Linear(d, 3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.squeeze(1)  # (B, T, F)
         h = self.input_proj(x) + self.pos  # (B, T, d)
         h = self.encoder(h)
-        return self.head(h.mean(dim=1))  # (B, 3)
+        return self.head(self.pool(h))  # (B, 3)
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         return self(batch["x"].to(device).float())
