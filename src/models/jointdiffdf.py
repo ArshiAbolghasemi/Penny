@@ -29,6 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.consistency import precond
 from models.modules import (
     BiN,
     _groups,
@@ -182,8 +183,6 @@ class JointDiffusionDF(nn.Module):
         broadcast as ``(B, 1, T, 1)`` over channel and feature axes, and c_noise
         ``(B, T)`` feeds the per-timestep conditioning path of ``forward``.
         """
-        from models.consistency import precond
-
         c_skip, c_out, c_in, c_noise = precond(sigma, self.sigma_data, self.sigma_min)
 
         def bt(c: torch.Tensor) -> torch.Tensor:

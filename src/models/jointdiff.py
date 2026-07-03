@@ -12,6 +12,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from models.consistency import precond
 from models.modules import (
     AttentionPool,
     BiN,
@@ -83,8 +84,6 @@ class JointDiffusion(nn.Module):
 
     def denoise(self, x: torch.Tensor, sigma: torch.Tensor):
         """Consistency function f_theta(x, sigma) -> (x0_hat, logits). sigma: (B,)."""
-        from models.consistency import precond
-
         c_skip, c_out, c_in, c_noise = precond(sigma, self.sigma_data, self.sigma_min)
         v = (-1,) + (1,) * (x.dim() - 1)  # (B,1,1,1)
         raw, logits = self(c_in.view(v) * x, c_noise)
