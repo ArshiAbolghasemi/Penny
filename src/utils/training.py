@@ -81,6 +81,36 @@ def resolve_device(requested: str) -> torch.device:
     return torch.device(requested)
 
 
+def measure_sigma_data(dataset, max_windows: int = 4096) -> float:
+    """Empirical EDM ``sigma_data`` — the std of the (clean) training windows.
+
+    EDM/consistency preconditioning is calibrated to the standard deviation of the
+    data distribution the network denoises.  For LOB windows the inputs are the
+    causally z-scored feature images, whose std is close to but not exactly 1
+    (trailing-window normalization lets current values exceed unit scale), so a
+    hardcoded guess miscalibrates ``c_skip``/``c_out``.  This measures it directly
+    from up to ``max_windows`` training windows (population std over all elements).
+
+    Returns a positive float (falls back to 1.0 on an empty/degenerate dataset).
+    """
+    n = len(dataset)
+    if n == 0:
+        return 1.0
+    step = max(1, n // max_windows)
+    total = sq = count = 0.0
+    for i in range(0, n, step):
+        x = dataset[i]["x"]
+        x = x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
+        total += x.sum().item()
+        sq += (x * x).sum().item()
+        count += x.numel()
+    if count == 0:
+        return 1.0
+    mean = total / count
+    var = max(sq / count - mean * mean, 0.0)
+    return math.sqrt(var) or 1.0
+
+
 def build_cosine_schedule(optimizer, config: dict, total_steps: int) -> LambdaLR:
     """Linear warmup then cosine decay over ``total_steps``.
 

@@ -64,3 +64,17 @@ def interval_weights(
 def pseudo_huber_const(numel: int, k: float = 0.00054) -> float:
     """Improved-CT Pseudo-Huber constant c = k·sqrt(d) for data dimensionality ``numel``."""
     return k * math.sqrt(numel)
+
+
+def discretization_n(step: int, total_steps: int, s0: int = 10, s1: int = 1280) -> int:
+    """Improved-CT annealing schedule for the number of discretization steps N(k).
+
+    Song & Dhariwal (2023) grow the number of Karras noise levels during training
+    via a doubling schedule: ``N`` starts at ``s0+1`` and doubles every ``K'``
+    steps up to ``s1+1``, where ``K' = total_steps / (log2(s1/s0) + 1)``.  More
+    levels ⇒ smaller adjacent-sigma gaps ⇒ lower consistency-matching bias late in
+    training.  Returns the number of sigma *boundaries* (so there are ``N-1``
+    adjacent intervals to sample from).
+    """
+    k_prime = max(1, math.floor(total_steps / (math.log2(s1 / s0) + 1.0)))
+    return min(s0 * 2 ** (step // k_prime), s1) + 1

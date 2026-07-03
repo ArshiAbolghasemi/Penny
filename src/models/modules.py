@@ -58,9 +58,7 @@ class AttentionPool(nn.Module):
     def __init__(self, dim: int, heads: int = 4, dropout: float = 0.0) -> None:
         super().__init__()
         self.query = nn.Parameter(torch.randn(1, 1, dim) * 0.02)
-        self.attn = nn.MultiheadAttention(
-            dim, heads, dropout=dropout, batch_first=True
-        )
+        self.attn = nn.MultiheadAttention(dim, heads, dropout=dropout, batch_first=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         q = self.query.expand(x.shape[0], -1, -1)

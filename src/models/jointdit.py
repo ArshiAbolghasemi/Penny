@@ -1,29 +1,43 @@
 """JointDiT: a Diffusion Transformer (DiT) trained jointly to denoise and classify.
 
 Same joint objective as JointDiffusion (Deja et al., 2023) but the U-Net backbone
-is replaced by a DiT (Peebles & Xie, 2023):
+is replaced by a DiT (Peebles & Xie, 2023) restructured for LOB windows:
 
-  1. Patchify   the (T × F) LOB window into non-overlapping p×p patches → tokens.
-  2. DiT blocks self-attention + MLP, each modulated by the timestep embedding
-                via adaLN-Zero (per-block shift/scale/gate produced from t).
-  3. Denoise    a final adaLN layer + linear un-patchifies the tokens back to
-                ε̂ (B, 1, T, F), trained with ε-prediction MSE.
-  4. Classify   the token sequence is mean-pooled and an MLP head predicts the
+  1. Tokenize   the ``(T × F)`` window with **no patchify** — every ``(timestep,
+                level)`` cell is its own token, produced by a shared linear
+                projection of the per-cell value.  The F axis carries the
+                per-level features chosen by the dataset (OFI/depth or LOB price
+                offsets), so one column ≈ one price level.
+  2. Position   **factored** learned positional embeddings — a time-position table
+                ``(T, D)`` and a level-position table ``(F, D)`` are broadcast-added
+                so token ``(t, l)`` gets ``pos_time[t] + pos_level[l]``.
+  3. DiT blocks self-attention + MLP, each modulated by the timestep embedding via
+                adaLN-Zero (per-block shift/scale/gate produced from t), with
+                **U-ViT additive long skips**: encoder-half block ``i`` is added
+                into the input of decoder-half block ``N-1-i``.
+  4. Denoise    a final adaLN layer + linear maps each token back to one scalar,
+                reshaped to ``eps_hat (B, 1, T, F)``.
+  5. Classify   the token sequence is mean-pooled and an MLP head predicts the
                 trend label (down / flat / up).
 
-Input : ``x_t (B, 1, T, F)`` noisy window + integer timestep ``t (B,)``.
-Output: ``(eps_hat (B, 1, T, F), logits (B, 3))``.
+Two training contracts share this one backbone (as in :class:`JointDiffusion`):
 
-At inference call ``predict(batch, device)`` which evaluates the clean window at
-``t = 0`` → ``logits (B, 3)``.  Identical contract to every other crypto model.
+  * ``forward(x_t, t) -> (eps_hat, logits)`` — raw ε-prediction network, used by
+    the DDPM DiT trainer (``crypto.train_jointdit``).
+  * ``denoise(x, sigma) -> (x0_hat, logits)`` — EDM-preconditioned consistency
+    function ``f_theta``, used by the consistency (``train_jointdit_cm``) and
+    drift (``train_jointdit_drift``) trainers.
+
+At inference call ``predict(batch, device)`` → ``logits (B, 3)`` (identical
+contract to every other crypto model).
 """
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
+from models.consistency import precond
 from models.modules import (
     count_parameters as count_parameters,  # re-export
     sinusoidal_embedding,
@@ -66,12 +80,12 @@ class DiTBlock(nn.Module):
 
 
 class FinalLayer(nn.Module):
-    """adaLN-Zero final layer mapping tokens back to patch pixels."""
+    """adaLN-Zero final layer mapping each token back to one scalar cell."""
 
-    def __init__(self, dim: int, patch: int, out_ch: int) -> None:
+    def __init__(self, dim: int, out_ch: int) -> None:
         super().__init__()
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(dim, patch * patch * out_ch)
+        self.linear = nn.Linear(dim, out_ch)
         self.ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
@@ -80,7 +94,7 @@ class FinalLayer(nn.Module):
 
 
 class JointDiT(nn.Module):
-    """DiT backbone trained jointly to denoise (ε-pred) and classify trend."""
+    """DiT backbone trained jointly to denoise (ε-pred / consistency) and classify."""
 
     family = "joint_diffusion"  # same predict/forward contract as JointDiffusion
 
@@ -88,30 +102,27 @@ class JointDiT(nn.Module):
         super().__init__()
         T = config["T_past"]
         F_dim = config["n_features"]
-        p = config.get("jdit_patch", 4)
         dim = config.get("jdit_dim", 192)
         depth = config.get("jdit_depth", 6)
         heads = config.get("jdit_heads", 6)
         mlp_ratio = config.get("jdit_mlp_ratio", 4.0)
         dropout = config.get("jdit_dropout", 0.1)
 
-        self.T, self.F, self.p = T, F_dim, p
-        # pad (T, F) up to whole patches; grid is fixed from the config dims
-        self.gt = (T + p - 1) // p
-        self.gf = (F_dim + p - 1) // p
-        self.pad_t = self.gt * p - T
-        self.pad_f = self.gf * p - F_dim
-        n_tokens = self.gt * self.gf
+        self.T, self.F, self.depth = T, F_dim, depth
 
-        self.patch = nn.Conv2d(1, dim, kernel_size=p, stride=p)
-        self.pos = nn.Parameter(torch.zeros(1, n_tokens, dim))
+        # No patchify: one token per (timestep, level) cell, shared 1→D projection.
+        self.embed = nn.Linear(1, dim)
+        # Factored positional embeddings: separate time / level tables, added.
+        self.pos_time = nn.Parameter(torch.zeros(1, T, 1, dim))
+        self.pos_level = nn.Parameter(torch.zeros(1, 1, F_dim, dim))
+
         self.time_mlp = nn.Sequential(
             nn.Linear(dim, dim), nn.SiLU(), nn.Linear(dim, dim)
         )
         self.blocks = nn.ModuleList(
             DiTBlock(dim, heads, mlp_ratio, dropout) for _ in range(depth)
         )
-        self.final = FinalLayer(dim, p, out_ch=1)
+        self.final = FinalLayer(dim, out_ch=1)
         self.classifier = nn.Sequential(
             nn.LayerNorm(dim),
             nn.Linear(dim, dim),
@@ -119,11 +130,19 @@ class JointDiT(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(dim, 3),
         )
+
+        # EDM / consistency preconditioning parameters — only used by denoise();
+        # forward() is left as a raw ε-network so DDPM trainers keep working.
+        self.sigma_data = float(config.get("cm_sigma_data", 0.5))
+        self.sigma_min = float(config.get("cm_sigma_min", 0.002))
+        self.consistency = bool(config.get("cm_enabled", False))
+
         self._init_weights()
 
     def _init_weights(self) -> None:
-        nn.init.normal_(self.pos, std=0.02)
-        # adaLN-Zero: zero the modulation outputs so blocks start as identity
+        nn.init.normal_(self.pos_time, std=0.02)
+        nn.init.normal_(self.pos_level, std=0.02)
+        # adaLN-Zero: zero the modulation outputs so blocks start as identity.
         for blk in self.blocks:
             nn.init.zeros_(blk.ada[-1].weight)
             nn.init.zeros_(blk.ada[-1].bias)
@@ -132,31 +151,53 @@ class JointDiT(nn.Module):
         nn.init.zeros_(self.final.linear.weight)
         nn.init.zeros_(self.final.linear.bias)
 
-    def _temb(self, t: torch.Tensor, dim: int) -> torch.Tensor:
-        return self.time_mlp(sinusoidal_embedding(t, dim))
+    def _tokenize(self, x_t: torch.Tensor) -> torch.Tensor:
+        # x_t: (B, 1, T, F) -> tokens (B, T*F, D) with factored positions added.
+        B = x_t.shape[0]
+        cells = x_t.squeeze(1).unsqueeze(-1)  # (B, T, F, 1)
+        tok = self.embed(cells) + self.pos_time + self.pos_level  # (B, T, F, D)
+        return tok.reshape(B, self.T * self.F, -1)
 
-    def _unpatchify(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, N, p*p*1) → (B, 1, T, F) cropped back from the padded grid
-        B = x.shape[0]
-        p, gt, gf = self.p, self.gt, self.gf
-        x = x.view(B, gt, gf, p, p, 1)
-        x = x.permute(0, 5, 1, 3, 2, 4).reshape(B, 1, gt * p, gf * p)
-        return x[:, :, : self.T, : self.F]
+    def _encode(self, tok: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        """Run the DiT blocks with U-ViT additive long skips (block i ↔ N-1-i)."""
+        skips: list[torch.Tensor] = []
+        half = self.depth // 2
+        for i, blk in enumerate(self.blocks):
+            if i < half:  # encoder half — stash outputs
+                tok = blk(tok, c)
+                skips.append(tok)
+            elif i >= self.depth - half:  # decoder half — add mirror skip
+                tok = blk(tok + skips.pop(), c)
+            else:  # middle block (odd depth) — no skip
+                tok = blk(tok, c)
+        return tok
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor):
-        dim = self.pos.shape[-1]
-        x = F.pad(x_t, (0, self.pad_f, 0, self.pad_t))  # (B, 1, gt*p, gf*p)
-        tok = self.patch(x).flatten(2).transpose(1, 2) + self.pos  # (B, N, D)
-        c = self._temb(t, dim)
-        for blk in self.blocks:
-            tok = blk(tok, c)
-        eps_hat = self._unpatchify(self.final(tok, c))
+        # t carries the DDPM timestep or the EDM c_noise; both feed the same
+        # sinusoidal embedding (which accepts float inputs).
+        dim = self.pos_time.shape[-1]
+        c = self.time_mlp(sinusoidal_embedding(t, dim))
+        tok = self._encode(self._tokenize(x_t), c)
+        eps_hat = self.final(tok, c).reshape(x_t.shape[0], self.T, self.F)
         logits = self.classifier(tok.mean(dim=1))
-        return eps_hat, logits
+        return eps_hat.unsqueeze(1), logits
+
+    def denoise(self, x: torch.Tensor, sigma: torch.Tensor):
+        """EDM consistency function f_theta(x, sigma) -> (x0_hat, logits). sigma: (B,)."""
+        c_skip, c_out, c_in, c_noise = precond(sigma, self.sigma_data, self.sigma_min)
+        v = (-1,) + (1,) * (x.dim() - 1)  # (B,1,1,1)
+        raw, logits = self(c_in.view(v) * x, c_noise)
+        x0 = c_skip.view(v) * x + c_out.view(v) * raw
+        return x0, logits
 
     @torch.no_grad()
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         x = batch["x"].to(device).float()
-        t = torch.zeros(x.shape[0], dtype=torch.long, device=device)
-        _, logits = self(x, t)
+        b = x.shape[0]
+        if self.consistency:  # read logits from the denoised (sigma_min) pass
+            sigma = torch.full((b,), self.sigma_min, device=device)
+            _, logits = self.denoise(x, sigma)
+        else:  # DDPM path: evaluate the clean window at t = 0
+            t = torch.zeros(b, dtype=torch.long, device=device)
+            _, logits = self(x, t)
         return logits
