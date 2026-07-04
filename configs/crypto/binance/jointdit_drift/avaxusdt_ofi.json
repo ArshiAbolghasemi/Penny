@@ -36,7 +36,7 @@
   "drift_pos_bank": 4096,
   "drift_neg_bank": 4096,
   "lambda_trend": 1.0,
-  "batch_size": 32,
+  "batch_size": 64,
   "lr": 0.0001,
   "weight_decay": 1e-05,
   "warmup_steps": 500,
