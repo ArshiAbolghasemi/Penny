@@ -1,26 +1,24 @@
 """JointDiT: a Diffusion Transformer (DiT) trained jointly to denoise and classify.
 
 Same joint objective as JointDiffusion (Deja et al., 2023) but the U-Net backbone
-is replaced by a DiT (Peebles & Xie, 2023) restructured for LOB windows:
+is replaced by a DiT (Peebles & Xie, 2023):
 
-  1. Tokenize   the ``(T × F)`` window **per price level** (no patchify).  Using
-                the known ``features.py`` column layout, each price level at each
-                timestep becomes one token — a linear projection of that level's
-                channel features (LOB: bid/ask price offset + bid/ask log-volume =
-                4 ch; OFI: net Cont-OFI = 1 ch).  The 11 non-level microstructure
-                features become one extra "global" token per timestep.  So a
-                timestep contributes ``L + 1`` tokens and ``N = T·(L+1)`` — far
-                fewer than one-token-per-cell, while keeping each level's identity
-                intact (a p×p patch would blend price/volume/global rows, which are
-                heterogeneous quantities, and blur which level a value came from).
-  2. Position   **factored** learned positional embeddings — a time table ``(T,D)``
-                and a slot table ``(L+1, D)`` are broadcast-added, so token
-                ``(t, slot)`` gets ``pos_time[t] + pos_level[slot]``.
+  1. Patchify   the ``(T × F)`` LOB window into non-overlapping ``p×p`` patches via
+                a strided ``Conv2d`` → tokens.  This trades the semantic precision
+                of per-level tokenization (each level/global-feature block kept
+                intact) for a much smaller token count — attention cost is
+                quadratic in the number of tokens, and patchify's ``(T/p)·(F/p)``
+                grid is far cheaper per epoch than one token per cell or per level.
+  2. Position   **factored** learned positional embeddings over the *patch grid* —
+                a time-patch table ``(gt, D)`` and a feature-patch table
+                ``(gf, D)`` are broadcast-added, so patch ``(i, j)`` gets
+                ``pos_time[i] + pos_col[j]``.
   3. DiT blocks self-attention + MLP, each modulated by the timestep embedding via
                 adaLN-Zero, with **U-ViT additive long skips**: encoder-half block
                 ``i`` is added into the input of decoder-half block ``N-1-i``.
-  4. Denoise    a final adaLN layer + per-slot linear heads map tokens back to the
-                level channels / global features, reassembled into ``(B, 1, T, F)``.
+  4. Denoise    a final adaLN layer + linear un-patchifies the tokens back to
+                ``ε̂ (B, 1, T, F)``, trained with ε-prediction MSE (or, under EDM
+                preconditioning, ``x0`` reconstruction).
   5. Classify   the token sequence is mean-pooled and an MLP head predicts the
                 trend label (down / flat / up).
 
@@ -40,14 +38,13 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from models.consistency import precond
 from models.modules import (
     count_parameters as count_parameters,  # re-export
     sinusoidal_embedding,
 )
-
-N_GLOBAL = 11  # non-level microstructure/trade/quote features (see crypto.features)
 
 
 def _modulate(
@@ -85,6 +82,20 @@ class DiTBlock(nn.Module):
         return x
 
 
+class FinalLayer(nn.Module):
+    """adaLN-Zero final layer mapping tokens back to patch pixels."""
+
+    def __init__(self, dim: int, patch: int, out_ch: int) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        self.linear = nn.Linear(dim, patch * patch * out_ch)
+        self.ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        shift, scale = self.ada(c).chunk(2, dim=1)
+        return self.linear(_modulate(self.norm(x), shift, scale))
+
+
 class JointDiT(nn.Module):
     """DiT backbone trained jointly to denoise (ε-pred / consistency) and classify."""
 
@@ -94,34 +105,25 @@ class JointDiT(nn.Module):
         super().__init__()
         T = config["T_past"]
         F_dim = config["n_features"]
-        n = config["n_lob_levels"]
-        mode = config.get("feature_mode", "ofi")
+        p = config.get("jdit_patch", 4)
         dim = config.get("jdit_dim", 192)
         depth = config.get("jdit_depth", 6)
         heads = config.get("jdit_heads", 6)
         mlp_ratio = config.get("jdit_mlp_ratio", 4.0)
         dropout = config.get("jdit_dropout", 0.1)
 
-        # Per-level layout (crypto.features): LOB packs 4 channels/level (bid/ask
-        # price offset + bid/ask log-volume), OFI packs 1 (net Cont-OFI); both add
-        # N_GLOBAL non-level features carried by a single global token per timestep.
-        self.mode = mode
-        self.L = n  # price levels (= level tokens per timestep)
-        self.C = 4 if mode == "lob" else 1  # channels per level
-        self.G = N_GLOBAL
-        self.P = self.L + 1  # tokens per timestep (levels + 1 global)
-        self.T, self.F = T, F_dim
-        assert self.C * self.L + self.G == F_dim, (
-            f"feature layout mismatch: C*L+G={self.C * self.L + self.G} != F={F_dim} "
-            f"(mode={mode}, n={n})"
-        )
+        self.T, self.F, self.p = T, F_dim, p
+        # pad (T, F) up to whole patches; grid is fixed from the config dims
+        self.gt = (T + p - 1) // p
+        self.gf = (F_dim + p - 1) // p
+        self.pad_t = self.gt * p - T
+        self.pad_f = self.gf * p - F_dim
         self.depth = depth
 
-        self.level_embed = nn.Linear(self.C, dim)
-        self.global_embed = nn.Linear(self.G, dim)
-        # Factored positional embeddings: time table + slot table (L levels + global).
-        self.pos_time = nn.Parameter(torch.zeros(1, T, 1, dim))
-        self.pos_slot = nn.Parameter(torch.zeros(1, 1, self.P, dim))
+        self.patch = nn.Conv2d(1, dim, kernel_size=p, stride=p)
+        # Factored positional embeddings over the *patch grid* (not raw T, F).
+        self.pos_time = nn.Parameter(torch.zeros(1, self.gt, 1, dim))
+        self.pos_col = nn.Parameter(torch.zeros(1, 1, self.gf, dim))
 
         self.time_mlp = nn.Sequential(
             nn.Linear(dim, dim), nn.SiLU(), nn.Linear(dim, dim)
@@ -129,11 +131,7 @@ class JointDiT(nn.Module):
         self.blocks = nn.ModuleList(
             DiTBlock(dim, heads, mlp_ratio, dropout) for _ in range(depth)
         )
-        # Final adaLN-Zero: shared modulated norm, then per-slot reconstruction heads.
-        self.final_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.final_ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
-        self.head_level = nn.Linear(dim, self.C)
-        self.head_global = nn.Linear(dim, self.G)
+        self.final = FinalLayer(dim, p, out_ch=1)
         self.classifier = nn.Sequential(
             nn.LayerNorm(dim),
             nn.Linear(dim, dim),
@@ -152,37 +150,25 @@ class JointDiT(nn.Module):
 
     def _init_weights(self) -> None:
         nn.init.normal_(self.pos_time, std=0.02)
-        nn.init.normal_(self.pos_slot, std=0.02)
+        nn.init.normal_(self.pos_col, std=0.02)
         # adaLN-Zero: zero the modulation outputs so blocks start as identity.
         for blk in self.blocks:
             nn.init.zeros_(blk.ada[-1].weight)
             nn.init.zeros_(blk.ada[-1].bias)
-        nn.init.zeros_(self.final_ada[-1].weight)
-        nn.init.zeros_(self.final_ada[-1].bias)
-        for head in (self.head_level, self.head_global):
-            nn.init.zeros_(head.weight)
-            nn.init.zeros_(head.bias)
+        nn.init.zeros_(self.final.ada[-1].weight)
+        nn.init.zeros_(self.final.ada[-1].bias)
+        nn.init.zeros_(self.final.linear.weight)
+        nn.init.zeros_(self.final.linear.bias)
 
-    def _split_features(self, x: torch.Tensor):
-        """(B, T, F) → (level feats (B,T,L,C), global feats (B,T,G))."""
-        lvl_flat = x[..., : self.C * self.L]  # channel-major: [ch0(L), ch1(L), …]
-        lvl = lvl_flat.reshape(*x.shape[:2], self.C, self.L).transpose(2, 3)
-        glb = x[..., self.C * self.L :]
-        return lvl, glb  # (B,T,L,C), (B,T,G)
-
-    def _merge_features(self, lvl: torch.Tensor, glb: torch.Tensor) -> torch.Tensor:
-        """Inverse of :meth:`_split_features`: (B,T,L,C),(B,T,G) → (B, T, F)."""
-        lvl_flat = lvl.transpose(2, 3).reshape(*lvl.shape[:2], self.C * self.L)
-        return torch.cat([lvl_flat, glb], dim=-1)
+    def _temb(self, t: torch.Tensor, dim: int) -> torch.Tensor:
+        return self.time_mlp(sinusoidal_embedding(t, dim))
 
     def _tokenize(self, x_t: torch.Tensor) -> torch.Tensor:
-        # x_t: (B, 1, T, F) -> tokens (B, T*P, D) with factored positions added.
-        lvl, glb = self._split_features(x_t.squeeze(1))
-        level_tok = self.level_embed(lvl)  # (B, T, L, D)
-        global_tok = self.global_embed(glb).unsqueeze(2)  # (B, T, 1, D)
-        tok = torch.cat([level_tok, global_tok], dim=2)  # (B, T, P, D)
-        tok = tok + self.pos_time + self.pos_slot
-        return tok.reshape(tok.shape[0], self.T * self.P, -1)
+        # x_t: (B, 1, T, F) -> tokens (B, gt*gf, D) with factored patch positions.
+        x = F.pad(x_t, (0, self.pad_f, 0, self.pad_t))  # (B, 1, gt*p, gf*p)
+        grid = self.patch(x).permute(0, 2, 3, 1)  # (B, gt, gf, D)
+        grid = grid + self.pos_time + self.pos_col
+        return grid.reshape(grid.shape[0], self.gt * self.gf, -1)
 
     def _encode(self, tok: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """Run the DiT blocks with U-ViT additive long skips (block i ↔ N-1-i)."""
@@ -198,22 +184,19 @@ class JointDiT(nn.Module):
                 tok = blk(tok, c)
         return tok
 
-    def _reconstruct(self, tok: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        """Final adaLN + per-slot heads: tokens (B, T*P, D) → eps (B, 1, T, F)."""
-        shift, scale = self.final_ada(c).chunk(2, dim=1)
-        h = _modulate(self.final_norm(tok), shift, scale)
-        h = h.reshape(h.shape[0], self.T, self.P, -1)  # (B, T, P, D)
-        lvl = self.head_level(h[:, :, : self.L, :])  # (B, T, L, C)
-        glb = self.head_global(h[:, :, self.L, :])  # (B, T, G)
-        return self._merge_features(lvl, glb).unsqueeze(1)  # (B, 1, T, F)
+    def _unpatchify(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, N, p*p*1) → (B, 1, T, F) cropped back from the padded grid
+        B = x.shape[0]
+        p, gt, gf = self.p, self.gt, self.gf
+        x = x.view(B, gt, gf, p, p, 1)
+        x = x.permute(0, 5, 1, 3, 2, 4).reshape(B, 1, gt * p, gf * p)
+        return x[:, :, : self.T, : self.F]
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor):
-        # t carries the DDPM timestep or the EDM c_noise; both feed the same
-        # sinusoidal embedding (which accepts float inputs).
         dim = self.pos_time.shape[-1]
-        c = self.time_mlp(sinusoidal_embedding(t, dim))
+        c = self._temb(t, dim)
         tok = self._encode(self._tokenize(x_t), c)
-        eps_hat = self._reconstruct(tok, c)
+        eps_hat = self._unpatchify(self.final(tok, c))
         logits = self.classifier(tok.mean(dim=1))
         return eps_hat, logits
 
