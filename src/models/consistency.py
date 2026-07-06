@@ -39,13 +39,60 @@ def karras_sigmas(
     return (lo + i / (n - 1) * (hi - lo)) ** rho
 
 
-def precond(sigma: torch.Tensor, sigma_data: float, sigma_min: float):
-    """EDM preconditioning coefficients (c_skip, c_out, c_in, c_noise) for ``sigma``."""
-    c_skip = sigma_data**2 / ((sigma - sigma_min) ** 2 + sigma_data**2)
-    c_out = sigma_data * (sigma - sigma_min) / torch.sqrt(sigma**2 + sigma_data**2)
-    c_in = 1.0 / torch.sqrt(sigma**2 + sigma_data**2)
+def precond(
+    sigma: torch.Tensor,
+    sigma_data: float,
+    sigma_min: float,
+    kappa: torch.Tensor | float | None = None,
+):
+    """(t-)EDM preconditioning coefficients (c_skip, c_out, c_in, c_noise).
+
+    Gaussian EDM (Karras 2022) by default.  When a per-sample Student-t scale
+    ``kappa`` is supplied (t-EDM, Pandey et al. 2025), the noise variance at level
+    ``sigma`` is ``kappa·sigma^2`` rather than ``sigma^2``, so the variance-carrying
+    coefficients pick up ``kappa`` exactly as if ``sigma -> sigma·sqrt(kappa)``:
+
+        c_in   = 1 / sqrt(kappa·sigma^2 + sigma_data^2)
+        c_skip = sigma_data^2 / (kappa·(sigma - sigma_min)^2 + sigma_data^2)
+        c_out  = sigma_data·sqrt(kappa)·(sigma - sigma_min)
+                 / sqrt(kappa·sigma^2 + sigma_data^2)
+
+    ``c_noise`` still embeds the *schedule* level ``sigma`` (where on the trajectory
+    we are), not the latent scale.  At ``sigma = sigma_min`` we get ``c_skip = 1`` and
+    ``c_out = 0`` for any ``kappa``, so the consistency boundary ``f(x, sigma_min) = x``
+    holds regardless of the tail draw.  ``kappa = None`` (or ``1``) recovers Gaussian
+    EDM exactly (the ``nu -> inf`` limit).
+    """
+    if kappa is None:
+        kappa = 1.0
+    kroot = kappa**0.5
+    den = torch.sqrt(kappa * sigma**2 + sigma_data**2)
+    c_skip = sigma_data**2 / (kappa * (sigma - sigma_min) ** 2 + sigma_data**2)
+    c_out = sigma_data * kroot * (sigma - sigma_min) / den
+    c_in = 1.0 / den
     c_noise = 0.25 * torch.log(sigma.clamp_min(1e-20))
     return c_skip, c_out, c_in, c_noise
+
+
+def sample_kappa(
+    nu: float | None,
+    shape: tuple[int, ...],
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Per-sample Student-t scale ``kappa ~ Inverse-Gamma(nu/2, nu/2)`` (t-EDM).
+
+    Drawn via ``kappa = 1 / g`` with ``g ~ Gamma(nu/2, rate=nu/2)`` so that
+    ``sqrt(kappa)·eps`` (``eps ~ N(0, I)``) is marginally multivariate Student-t with
+    ``nu`` degrees of freedom.  ``E[kappa] = nu / (nu - 2)`` for ``nu > 2``; as
+    ``nu -> inf`` the mixing collapses to ``kappa = 1`` (Gaussian).  A very large /
+    missing ``nu`` short-circuits to ones so the Gaussian limit is exact and cheap.
+    """
+    if nu is None or nu >= 1e6:
+        return torch.ones(shape, device=device, dtype=dtype)
+    half = 0.5 * float(nu)
+    g = torch.distributions.Gamma(half, half).sample(torch.Size(shape))
+    return (1.0 / g.clamp_min(1e-12)).to(device=device, dtype=dtype)
 
 
 def interval_weights(
