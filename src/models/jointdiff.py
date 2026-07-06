@@ -82,9 +82,15 @@ class JointDiffusion(nn.Module):
             x = up(x, skip, temb)
         return self.out_conv(x), logits
 
-    def denoise(self, x: torch.Tensor, sigma: torch.Tensor):
-        """Consistency function f_theta(x, sigma) -> (x0_hat, logits). sigma: (B,)."""
-        c_skip, c_out, c_in, c_noise = precond(sigma, self.sigma_data, self.sigma_min)
+    def denoise(self, x: torch.Tensor, sigma: torch.Tensor, kappa=None):
+        """(t-)EDM consistency function f_theta(x, sigma) -> (x0_hat, logits).
+
+        ``sigma``: (B,).  ``kappa``: optional per-sample Student-t scale (B,) for
+        t-EDM; ``None`` ⇒ Gaussian EDM (the ``nu -> inf`` limit).
+        """
+        c_skip, c_out, c_in, c_noise = precond(
+            sigma, self.sigma_data, self.sigma_min, kappa
+        )
         v = (-1,) + (1,) * (x.dim() - 1)  # (B,1,1,1)
         raw, logits = self(c_in.view(v) * x, c_noise)
         x0 = c_skip.view(v) * x + c_out.view(v) * raw
