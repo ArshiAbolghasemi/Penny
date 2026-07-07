@@ -118,7 +118,7 @@ def _mean_W(fp: ForwardProcess, t: torch.Tensor) -> torch.Tensor:
 def _train_epoch(model, fp, mtl, loader, optimizer, lr_sched, config, device):
     model.train()
     grad_clip = config.get("grad_clip", 1.0)
-    grad_surgery = config.get("grad_surgery", True)
+    grad_surgery = config.get("grad_surgery", False)
     t_max = fp.schedule.num_timesteps
     a_sq = (fp.schedule.a**2).to(device)
     # trend CE only where signal dominates noise.  VP: alpha_bar >= 0.5 (SNR >= 1);
