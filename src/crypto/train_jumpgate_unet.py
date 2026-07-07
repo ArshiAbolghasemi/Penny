@@ -156,7 +156,7 @@ def _train_epoch(model, fp, loader, optimizer, lr_sched, config, device):
 
         tot += loss.item()
         dif += diff_loss.item()
-        cls += cls_loss.float()
+        cls += cls_loss.item()
         lw += L_W.item()
         n += 1
     n = max(n, 1)
