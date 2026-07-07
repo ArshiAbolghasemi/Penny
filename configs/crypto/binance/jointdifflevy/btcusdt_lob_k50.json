@@ -36,6 +36,5 @@
   "levy_gamma_shape": 1.0,
   "levy_gamma_scale": 1.0,
   "levy_table_num_r": 512,
-  "levy_table_mc": 20000,
-  "grad_surgery": true
+  "levy_table_mc": 20000
 }

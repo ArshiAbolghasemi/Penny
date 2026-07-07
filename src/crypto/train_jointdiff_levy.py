@@ -14,8 +14,7 @@ Joint objective (Deja et al. 2023) on the shared U-Net encoder:
               wbar_t = E[W_t] normalizes the score scale across timesteps)
     L_trend = CE(logits, label)   only on low-noise samples (SNR >= 1 gate)
 
-balanced with Kendall-Gal homoscedastic uncertainty weighting and (optionally)
-PCGrad gradient surgery (``grad_surgery``, default on).
+balanced with Kendall-Gal homoscedastic uncertainty weighting.
 
 Ablation toggle: ``diffusion_process`` = ``"levy"`` | ``"gaussian"`` switches the
 noising kernel + score target; everything else is identical.
@@ -41,7 +40,6 @@ from pathlib import Path
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -56,7 +54,6 @@ from levy.diffusion import ForwardProcess
 from models.jointdifflevy import JointDiffusionLevy, count_parameters
 from utils.evaluate import run_test
 from utils.flops import log_gflops
-from utils.pcgrad import pcgrad_backward
 from utils.training import (
     build_cosine_schedule,
     resolve_device,
@@ -70,8 +67,7 @@ class UncertaintyWeighting(nn.Module):
     """Kendall & Gal (2018) homoscedastic multi-task weighting.
 
     Each task loss becomes ``0.5*exp(-s_i)*L_i + 0.5*s_i`` with a learnable
-    log-variance ``s_i``.  Exposed per-task (not summed) so the two weighted terms
-    can also be fed to PCGrad separately.
+    log-variance ``s_i``.
     """
 
     def __init__(self, n: int = 2) -> None:
@@ -118,7 +114,6 @@ def _mean_W(fp: ForwardProcess, t: torch.Tensor) -> torch.Tensor:
 def _train_epoch(model, fp, mtl, loader, optimizer, lr_sched, config, device):
     model.train()
     grad_clip = config.get("grad_clip", 1.0)
-    grad_surgery = config.get("grad_surgery", False)
     t_max = fp.schedule.num_timesteps
     a_sq = (fp.schedule.a**2).to(device)
     # trend CE only where signal dominates noise.  VP: alpha_bar >= 0.5 (SNR >= 1);
@@ -127,10 +122,9 @@ def _train_epoch(model, fp, mtl, loader, optimizer, lr_sched, config, device):
         low_t = a_sq >= 0.5
     else:
         low_t = fp.schedule.sigma.to(device) < 1.0
-    params = list(model.parameters()) + list(mtl.parameters())
 
     tot = dif = cls = 0.0
-    cos_sum, cos_n, conflict_n, n = 0.0, 0, 0, 0
+    n = 0
     for batch in loader:
         x0 = batch["x"].to(device).float()  # (B, 1, T, F)
         label = batch["label"].to(device)
@@ -153,32 +147,20 @@ def _train_epoch(model, fp, mtl, loader, optimizer, lr_sched, config, device):
         else:
             cls_loss = logits.new_zeros(())
 
-        l_diff = mtl.weighted(0, diff_loss)
-        l_cls = mtl.weighted(1, cls_loss)
+        loss = mtl.weighted(0, diff_loss) + mtl.weighted(1, cls_loss)
 
         optimizer.zero_grad()
-        if grad_surgery and cls_loss.requires_grad:
-            cos = pcgrad_backward(l_diff, l_cls, params)
-            if not np.isnan(cos):
-                cos_sum += cos
-                cos_n += 1
-                conflict_n += int(cos < 0)
-        else:
-            (l_diff + l_cls).backward()
+        loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         lr_sched.step()
 
-        tot += (l_diff + l_cls).item()
+        tot += loss.item()
         dif += diff_loss.item()
         cls += cls_loss.item()
         n += 1
     n = max(n, 1)
-    out = {"total": tot / n, "diff": dif / n, "trend": cls / n}
-    if cos_n:
-        out["grad_cos"] = cos_sum / cos_n
-        out["conflict_rate"] = conflict_n / cos_n
-    return out
+    return {"total": tot / n, "diff": dif / n, "trend": cls / n}
 
 
 @torch.no_grad()
@@ -292,12 +274,11 @@ def main() -> None:
 
     gflops = log_gflops(model, train_ds, device)
     logger.info(
-        "  params={:.2f}M  gflops/sample={:.3f}  cond={}  jump_rate={}  grad_surgery={}  device={}",
+        "  params={:.2f}M  gflops/sample={:.3f}  cond={}  jump_rate={}  device={}",
         count_parameters(model) / 1e6,
         gflops,
         config.get("jdl_cond", "film"),
         config.get("levy_jump_rate", 1.0) if process == "levy" else 0.0,
-        config.get("grad_surgery", True),
         device,
     )
 
@@ -328,14 +309,8 @@ def main() -> None:
             model, fp, mtl, train_loader, optimizer, lr_sched, config, device
         )
         val_ce, val_acc = _validate(model, val_loader, device)
-        surgery = (
-            " | cos={:.3f} conflict={:.1%}".format(tr["grad_cos"], tr["conflict_rate"])
-            if "grad_cos" in tr
-            else ""
-        )
         logger.info(
-            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} acc={:.4f}"
-            + surgery,
+            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} acc={:.4f}",
             epoch,
             tr["total"],
             tr["diff"],
