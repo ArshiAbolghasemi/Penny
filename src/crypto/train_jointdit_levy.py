@@ -295,9 +295,7 @@ def main() -> None:
 
     best, patience, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
-        tr = _train_epoch(
-            model, fp, train_loader, optimizer, lr_sched, config, device
-        )
+        tr = _train_epoch(model, fp, train_loader, optimizer, lr_sched, config, device)
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
             "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} | val_ce={:.4f} acc={:.4f}",
