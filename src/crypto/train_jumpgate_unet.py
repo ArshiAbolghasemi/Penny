@@ -111,6 +111,7 @@ def _train_epoch(model, fp, loader, optimizer, lr_sched, config, device):
     mu_W = config.get("mu_W", 0.1)
     kappa = config.get("cls_gate_kappa", 4.0)
     soft_gate = bool(config.get("soft_cls_gate", False))
+    label_smoothing = config.get("label_smoothing", 0.0)
     oracle = config.get("w_conditioning", "none") == "oracle"
     t_max = fp.schedule.num_timesteps
     a_sq = (fp.schedule.a**2).to(device)
@@ -138,7 +139,9 @@ def _train_epoch(model, fp, loader, optimizer, lr_sched, config, device):
         )
 
         # trend loss with (soft or hard) noise-aware gate
-        ce = F.cross_entropy(logits, label, reduction="none")
+        ce = F.cross_entropy(
+            logits, label, reduction="none", label_smoothing=label_smoothing
+        )
         if soft_gate:
             gate = _soft_gate(a_sq[t], logW_hat, kappa)
             cls_loss = (gate * ce).mean()

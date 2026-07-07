@@ -135,6 +135,7 @@ class JumpGateUNet(nn.Module):
 
         bottleneck = chans[-1]
         self.pool = AttentionPool(bottleneck, heads=config.get("jdl_pool_heads", 4))
+        self.cls_dropout = nn.Dropout(config.get("cls_dropout", 0.0))
         self.classifier = nn.Linear(bottleneck, 3)
 
     # ---- conditioning -------------------------------------------------------
@@ -159,6 +160,11 @@ class JumpGateUNet(nn.Module):
             c = self.cond_mlp(torch.cat([temb_t, wemb], dim=-1))
         return c, logW_hat, pi_logit
 
+    def _trend_logits(self, bottleneck: torch.Tensor) -> torch.Tensor:
+        """Pool bottleneck tokens -> dropout -> 3-class trend logits."""
+        tokens = bottleneck.flatten(2).transpose(1, 2)  # (B, H*W, C)
+        return self.classifier(self.cls_dropout(self.pool(tokens)))
+
     def encode(
         self, x: torch.Tensor, c: torch.Tensor
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
@@ -180,7 +186,7 @@ class JumpGateUNet(nn.Module):
         """Return ``(eps_hat (B,1,T,F), logits (B,3), logW_hat (B,), pi_logit (B,))``."""
         c, logW_hat, pi_logit = self._conditioning(t, x_t, logW_oracle)
         h, skips = self.encode(x_t, c)
-        logits = self.classifier(self.pool(skips[-1].flatten(2).transpose(1, 2)))
+        logits = self._trend_logits(skips[-1])
         for up, skip in zip(self.ups, reversed(skips[:-1])):
             h = up(h, skip, c)
         eps0 = self.out_conv0(h)
@@ -209,4 +215,4 @@ class JumpGateUNet(nn.Module):
         t = torch.zeros(x.shape[0], dtype=torch.long, device=device)
         c, _, _ = self._conditioning(t, x, None)
         _, skips = self.encode(x, c)
-        return self.classifier(self.pool(skips[-1].flatten(2).transpose(1, 2)))
+        return self._trend_logits(skips[-1])
