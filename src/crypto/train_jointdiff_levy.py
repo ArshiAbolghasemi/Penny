@@ -14,7 +14,7 @@ Joint objective (Deja et al. 2023) on the shared U-Net encoder:
               wbar_t = E[W_t] normalizes the score scale across timesteps)
     L_trend = CE(logits, label)   only on low-noise samples (SNR >= 1 gate)
 
-balanced with Kendall-Gal homoscedastic uncertainty weighting.
+combined as ``L_diff + lambda_trend * L_trend`` (fixed weight from the config).
 
 Ablation toggle: ``diffusion_process`` = ``"levy"`` | ``"gaussian"`` switches the
 noising kernel + score target; everything else is identical.
@@ -41,7 +41,6 @@ os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
 from sklearn.metrics import classification_report
@@ -61,21 +60,6 @@ from utils.training import (
     seed_worker,
     set_seed,
 )
-
-
-class UncertaintyWeighting(nn.Module):
-    """Kendall & Gal (2018) homoscedastic multi-task weighting.
-
-    Each task loss becomes ``0.5*exp(-s_i)*L_i + 0.5*s_i`` with a learnable
-    log-variance ``s_i``.
-    """
-
-    def __init__(self, n: int = 2) -> None:
-        super().__init__()
-        self.log_var = nn.Parameter(torch.zeros(n))
-
-    def weighted(self, i: int, loss: torch.Tensor) -> torch.Tensor:
-        return 0.5 * torch.exp(-self.log_var[i]) * loss + 0.5 * self.log_var[i]
 
 
 def _diffusion_cfg(config: dict) -> DiffusionConfig:
@@ -111,9 +95,10 @@ def _mean_W(fp: ForwardProcess, t: torch.Tensor) -> torch.Tensor:
     return w
 
 
-def _train_epoch(model, fp, mtl, loader, optimizer, lr_sched, config, device):
+def _train_epoch(model, fp, loader, optimizer, lr_sched, config, device):
     model.train()
     grad_clip = config.get("grad_clip", 1.0)
+    lam_cls = config.get("lambda_trend", 1.0)
     t_max = fp.schedule.num_timesteps
     a_sq = (fp.schedule.a**2).to(device)
     # trend CE only where signal dominates noise.  VP: alpha_bar >= 0.5 (SNR >= 1);
@@ -147,7 +132,7 @@ def _train_epoch(model, fp, mtl, loader, optimizer, lr_sched, config, device):
         else:
             cls_loss = logits.new_zeros(())
 
-        loss = mtl.weighted(0, diff_loss) + mtl.weighted(1, cls_loss)
+        loss = diff_loss + lam_cls * cls_loss
 
         optimizer.zero_grad()
         loss.backward()
@@ -264,7 +249,6 @@ def main() -> None:
     )
 
     model = JointDiffusionLevy(config).to(device)
-    mtl = UncertaintyWeighting(2).to(device)
 
     # Forward process; the levy path precomputes the generalized-score table once
     # (offline, MC over the mixing variance W) before training starts.
@@ -295,9 +279,7 @@ def main() -> None:
     val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
 
     optimizer = AdamW(
-        list(model.parameters()) + list(mtl.parameters()),
-        lr=config["lr"],
-        weight_decay=config["weight_decay"],
+        model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
     )
     lr_sched = build_cosine_schedule(
         optimizer, config, config["epochs"] * len(train_loader)
@@ -306,7 +288,7 @@ def main() -> None:
     best, patience, history = float("inf"), 0, []
     for epoch in range(config["epochs"]):
         tr = _train_epoch(
-            model, fp, mtl, train_loader, optimizer, lr_sched, config, device
+            model, fp, train_loader, optimizer, lr_sched, config, device
         )
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
