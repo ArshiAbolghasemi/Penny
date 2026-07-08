@@ -52,63 +52,12 @@ def assign_labels(trend: np.ndarray, alpha: float) -> np.ndarray:
     return labels
 
 
-def causal_realized_vol(mid: np.ndarray, window: int) -> np.ndarray:
-    """Trailing realized vol of relative returns, aligned per snapshot (causal).
-
-    ``vol[t]`` is the std of the ``window`` most recent returns (using only data up
-    to ``t``), NaN before enough history exists.  On the same relative scale as the
-    trend ratio, so the two are directly comparable.
-    """
-    N = len(mid)
-    vol = np.full(N, np.nan, dtype=np.float64)
-    r = np.zeros(N, dtype=np.float64)
-    r[1:] = np.where(mid[:-1] > 1e-12, np.diff(mid) / mid[:-1], 0.0)  # return into t
-    cs = np.cumsum(np.concatenate([[0.0], r]))
-    csq = np.cumsum(np.concatenate([[0.0], r * r]))
-    for t in range(window, N):
-        s = cs[t] - cs[t - window]
-        sq = csq[t] - csq[t - window]
-        mean = s / window
-        var = max(sq / window - mean * mean, 0.0)
-        vol[t] = np.sqrt(var)
-    return vol
-
-
-def assign_labels_vol_adaptive(
-    trend: np.ndarray, vol: np.ndarray, mult: float
-) -> np.ndarray:
-    """Label by a per-snapshot threshold ``mult * causal_realized_vol`` (not fixed α).
-
-    A move counts as up/down only if it clears ``mult`` local-vol units, so the bar
-    scales with volatility.  Invalid where trend or vol is NaN or vol is ~0.
-    """
-    labels = np.full(len(trend), -1, dtype=np.int64)
-    thr = mult * vol
-    valid = np.isfinite(trend) & np.isfinite(thr) & (thr > 1e-12)
-    labels[valid & (trend < -thr)] = DOWN
-    labels[valid & (np.abs(trend) <= thr)] = STATIONARY
-    labels[valid & (trend > thr)] = UP
-    return labels
-
-
 def build_labels(
     mid: np.ndarray, config: dict, train_end: int
 ) -> tuple[np.ndarray, float]:
-    """Return ``(labels, alpha)``.  ``labels[t] == -1`` for invalid positions.
-
-    ``label_mode`` (default ``"alpha"``) selects the thresholding scheme:
-      * ``"alpha"``       — fixed / 33rd-pct-calibrated global threshold (original).
-      * ``"vol_adaptive"``— per-snapshot ``label_vol_mult`` × causal realized vol
-        (``label_vol_window`` trailing returns); the returned "alpha" is the
-        multiplier (there is no single global threshold).
-    """
+    """Return ``(labels, alpha)``.  ``labels[t] == -1`` for invalid positions."""
     k = config["label_k"]
     trend = compute_trend_series(mid, k)
-    if config.get("label_mode", "alpha") == "vol_adaptive":
-        mult = float(config.get("label_vol_mult", 1.0))
-        window = int(config.get("label_vol_window", config["label_k"]))
-        vol = causal_realized_vol(mid, window)
-        return assign_labels_vol_adaptive(trend, vol, mult), mult
     alpha = (
         float(config["label_alpha"])
         if config.get("label_alpha", -1) > 0

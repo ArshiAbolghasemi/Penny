@@ -299,11 +299,10 @@ def main() -> None:
     cb = meta["class_balance"]
 
     logger.info(
-        "JumpGateLOB  symbol={} mode={} process={} label_mode={} w_cond={} gated={}",
+        "JumpGateLOB  symbol={} mode={} process={} w_cond={} gated={}",
         config["symbol"],
         mode,
         process,
-        config.get("label_mode", "alpha"),
         config.get("w_conditioning", "none"),
         config.get("gated_experts", False),
     )

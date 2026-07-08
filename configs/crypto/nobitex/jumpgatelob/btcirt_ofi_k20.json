@@ -42,7 +42,6 @@
   "label_smoothing": 0.1,
   "mu_jump": 0.05,
   "jump_rv_k": 4.0,
-  "label_vol_window": 20,
   "lambda_diff": 1.0,
   "jgl_local": "gru",
   "jgl_gru_hidden": 64,
@@ -56,7 +55,5 @@
   "jgl_feat_mix": "conv",
   "jgl_feat_heads": 2,
   "jgl_pad_mode": "reflect",
-  "baranchuk_phase1_epochs": 40,
-  "label_mode": "vol_adaptive",
-  "label_vol_mult": 1.0
+  "baranchuk_phase1_epochs": 40
 }
