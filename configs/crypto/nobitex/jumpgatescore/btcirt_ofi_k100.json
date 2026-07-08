@@ -49,5 +49,12 @@
   "sg_residual_hidden": 64,
   "sg_residual_layers": 8,
   "sg_residual_channels": 8,
-  "sg_dilation_cycle": 2
+  "sg_dilation_cycle": 2,
+  "sg_level_heads": 2,
+  "sg_pad_mode": "replicate",
+  "cls_t_anneal": true,
+  "cls_tau_start": 0.5,
+  "cls_tau_end": 0.05,
+  "mu_jump": 0.05,
+  "jump_rv_k": 4.0
 }

@@ -1,33 +1,36 @@
-"""JumpGate-ScoreGrad: the JumpGate Lévy-jump design on a ScoreGrad backbone.
+"""JumpGate-ScoreGrad: the JumpGate Lévy-jump design on a joint window denoiser.
 
 Same forward process, noise-state estimator and gating as :class:`JumpGateUNet`,
-but the 2-D U-Net is replaced by a **ScoreGrad / TimeGrad-style** score network
-(Yan et al. 2021, arXiv:2106.10121; https://github.com/yantijin/ScoreGradPred):
+but the backbone is a **recurrent-conditioned, jointly-coupled window denoiser**
+(an evolution of the ScoreGrad/TimeGrad idea, Yan et al. 2021):
 
-* a **GRU encoder** unrolls the LOB window along time, producing a per-timestep
-  hidden context ``H (B, T, num_cells)``;
-* a **WaveNet ``EpsilonTheta``** denoises each timestep's ``F``-dim feature vector
-  with a stack of dilated ``Conv1d`` residual blocks (gated ``sigmoid·tanh``
-  activation, per-block diffusion-step + conditioner injection, skip aggregation),
-  the conditioner being that timestep's GRU hidden state upsampled to ``F``.
+* a **bidirectional GRU** unrolls the LOB window along time, producing a
+  per-timestep context ``H (B, T, 2*num_cells)``.  The window ends at the
+  prediction point and the label lives strictly outside it, so looking both
+  directions inside the window leaks nothing.
+* a **flat (constant-resolution) denoiser** operates on the whole ``(T, F)`` grid
+  at once.  Each residual block couples **timesteps jointly** with a *dilated
+  temporal* ``Conv2d`` over ``T`` (replacing the old per-timestep feature-axis
+  conv), then mixes **book levels** with *cross-level attention over ``F``*
+  (replacing the feature-axis conv) — no U-Net pooling over ``T``.  Temporal
+  convs use ``replicate`` padding: neither time nor book levels are periodic, so
+  the old ``circular`` padding is dropped.
 
-So the diffusion runs over the feature axis (``F`` = ScoreGrad's ``target_dim``)
-conditioned on the recurrent context — exactly ScoreGrad's structure — while the
-window's whole ``(T, F)`` grid is denoised at once by batching timesteps.
+Every timestep's noise is thus predicted with information from the whole window
+(joint coupling) rather than independently through its GRU state.  The diffusion
+runs over the full grid conditioned on the recurrent context.
 
 JumpGate additions carried over from :class:`JumpGateUNet`:
 
 * ``g_phi`` (:class:`NoiseStateEstimator`) infers ``(logW_hat, pi_logit)``;
 * the per-block **diffusion-step** vector encodes ``(t, logW)`` via ``w_conditioning``
-  (``none`` | ``inferred`` | ``oracle``) — this is where W-awareness enters the
-  score net (ScoreGrad's ``diffusion_embedding``);
+  (``none`` | ``inferred`` | ``oracle``) — where W-awareness enters the denoiser;
 * **gated experts**: two output projections mixed by ``pi = sigmoid(pi_logit)``;
 * the **trend head** reads an attention-pool over the GRU context; inference is
-  feature-only (GRU + trend head on the clean window, no score net, no sampling).
+  feature-only (GRU + trend head on the clean window, no denoiser, no sampling).
 
-Padding note: the residual/skip/output convs use *same* padding (vs. ScoreGrad's
-asymmetric ``padding=2`` + kernel-3-no-pad scheme) so the network preserves the
-feature length for an arbitrary ``F`` — functionally equivalent, more robust.
+Despite the "ScoreGrad" name this is an **epsilon-prediction** model (see the
+trainer); ``recover_score = -eps / W`` converts to the score for sampling utils.
 """
 
 from __future__ import annotations
@@ -49,8 +52,8 @@ from models.modules import (
 class DiffusionStepMLP(nn.Module):
     """Build the per-block diffusion-step vector from ``t`` (and optionally ``logW``).
 
-    This is ScoreGrad's ``diffusion_embedding`` generalized to be W-aware: it is the
-    only place the inferred/true noise state enters the score network.
+    ScoreGrad's ``diffusion_embedding`` generalized to be W-aware: the only place
+    the inferred/true noise state enters the denoiser.
     """
 
     def __init__(self, temb_dim: int, hidden: int, w_conditioning: str) -> None:
@@ -76,119 +79,139 @@ class DiffusionStepMLP(nn.Module):
         return self.mlp(torch.cat([temb, wemb], dim=-1))
 
 
-class CondUpsampler(nn.Module):
-    """Upsample the GRU hidden context (num_cells) to the feature length F."""
+class LevelAttention(nn.Module):
+    """Self-attention across the ``F`` book levels, applied per (batch, timestep).
 
-    def __init__(self, cond_length: int, target_dim: int) -> None:
+    Input/output ``(B, C, T, F)``; the ``F`` positions are the attention tokens, so
+    every level can attend to every other level (cross-level mixing) — the
+    replacement for the old feature-axis convolution.
+    """
+
+    def __init__(self, channels: int, heads: int, dropout: float = 0.0) -> None:
         super().__init__()
-        self.linear1 = nn.Linear(cond_length, target_dim // 2 or 1)
-        self.linear2 = nn.Linear(target_dim // 2 or 1, target_dim)
+        self.norm = nn.LayerNorm(channels)
+        self.attn = nn.MultiheadAttention(
+            channels, heads, dropout=dropout, batch_first=True
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.leaky_relu(self.linear1(x), 0.4)
-        return F.leaky_relu(self.linear2(x), 0.4)
+        b, c, t, f = x.shape
+        h = x.permute(0, 2, 3, 1).reshape(b * t, f, c)  # (B*T, F, C) tokens = levels
+        hn = self.norm(h)
+        a, _ = self.attn(hn, hn, hn, need_weights=False)
+        h = h + a
+        return h.reshape(b, t, f, c).permute(0, 3, 1, 2)  # (B, C, T, F)
 
 
 class ResidualBlock(nn.Module):
-    """ScoreGrad residual block: dilated conv + gated activation + skip.
+    """Dilated *temporal* conv + gated activation + cross-level attention + skip.
 
-    ``x`` and ``conditioner`` are ``(N, C, F)`` / ``(N, 1, F)``; ``diffusion_step`` is
-    ``(N, residual_hidden)``.  Same-padding preserves the feature length ``F``.
+    Couples timesteps jointly (dilated conv over ``T``) and levels (attention over
+    ``F``).  ``x`` is ``(B, C, T, F)``; ``cond`` is the GRU context ``(B, T, cond_dim)``;
+    ``diffusion_step`` is ``(B, residual_hidden)``.  ``replicate`` padding preserves
+    ``T`` without assuming periodicity.
     """
 
-    def __init__(self, residual_hidden: int, residual_channels: int, dilation: int):
+    def __init__(
+        self,
+        residual_hidden: int,
+        residual_channels: int,
+        cond_dim: int,
+        dilation: int,
+        level_heads: int,
+        pad_mode: str = "replicate",
+    ) -> None:
         super().__init__()
-        self.dilated_conv = nn.Conv1d(
+        self.dilated_conv = nn.Conv2d(
             residual_channels,
             2 * residual_channels,
-            3,
-            padding=dilation,
-            dilation=dilation,
-            padding_mode="circular",
+            kernel_size=(3, 1),
+            padding=(dilation, 0),
+            dilation=(dilation, 1),
+            padding_mode=pad_mode,
         )
         self.diffusion_projection = nn.Linear(residual_hidden, residual_channels)
-        self.conditioner_projection = nn.Conv1d(1, 2 * residual_channels, 1)
-        self.output_projection = nn.Conv1d(residual_channels, 2 * residual_channels, 1)
-        nn.init.kaiming_normal_(self.conditioner_projection.weight)
+        self.cond_projection = nn.Linear(cond_dim, 2 * residual_channels)
+        self.level_attn = LevelAttention(residual_channels, level_heads)
+        self.output_projection = nn.Conv2d(residual_channels, 2 * residual_channels, 1)
         nn.init.kaiming_normal_(self.output_projection.weight)
 
-    def forward(self, x, conditioner, diffusion_step):
-        diffusion_step = self.diffusion_projection(diffusion_step).unsqueeze(-1)
-        conditioner = self.conditioner_projection(conditioner)
-        y = x + diffusion_step
-        y = self.dilated_conv(y) + conditioner
+    def forward(self, x, cond, diffusion_step):
+        # inject diffusion step (broadcast over T, F)
+        d = self.diffusion_projection(diffusion_step).unsqueeze(-1).unsqueeze(-1)
+        y = self.dilated_conv(x + d)  # (B, 2C, T, F)
+        # inject per-timestep GRU conditioner (broadcast over F)
+        c = self.cond_projection(cond).permute(0, 2, 1).unsqueeze(-1)  # (B, 2C, T, 1)
+        y = y + c
         gate, filt = torch.chunk(y, 2, dim=1)
-        y = torch.sigmoid(gate) * torch.tanh(filt)
-        y = F.leaky_relu(self.output_projection(y), 0.4)
+        y = torch.sigmoid(gate) * torch.tanh(filt)  # (B, C, T, F)
+        y = self.level_attn(y)  # cross-level mixing over F
+        y = F.leaky_relu(self.output_projection(y), 0.4)  # (B, 2C, T, F)
         residual, skip = torch.chunk(y, 2, dim=1)
         return (x + residual) / math.sqrt(2.0), skip
 
 
-class EpsilonTheta(nn.Module):
-    """WaveNet score network over the feature axis, conditioned on the GRU context."""
+class WindowDenoiser(nn.Module):
+    """Flat, joint (T, F) grid denoiser conditioned on the GRU context."""
 
     def __init__(
         self,
-        target_dim: int,
-        cond_length: int,
+        cond_dim: int,
         residual_hidden: int,
         residual_layers: int = 8,
         residual_channels: int = 8,
         dilation_cycle_length: int = 2,
+        level_heads: int = 2,
         gated_experts: bool = False,
+        pad_mode: str = "replicate",
     ):
         super().__init__()
-        self.input_projection = nn.Conv1d(1, residual_channels, 1)
-        self.cond_upsampler = CondUpsampler(cond_length, target_dim)
+        self.input_projection = nn.Conv2d(1, residual_channels, 1)
         self.residual_layers = nn.ModuleList(
             ResidualBlock(
                 residual_hidden,
                 residual_channels,
+                cond_dim,
                 dilation=2 ** (i % dilation_cycle_length),
+                level_heads=level_heads,
+                pad_mode=pad_mode,
             )
             for i in range(residual_layers)
         )
-        self.skip_projection = nn.Conv1d(
-            residual_channels, residual_channels, 3, padding=1
-        )
-        self.out0 = nn.Conv1d(residual_channels, 1, 3, padding=1)
-        self.out1 = (
-            nn.Conv1d(residual_channels, 1, 3, padding=1) if gated_experts else None
-        )
+        self.skip_projection = nn.Conv2d(residual_channels, residual_channels, 1)
+        self.out0 = nn.Conv2d(residual_channels, 1, 1)
+        self.out1 = nn.Conv2d(residual_channels, 1, 1) if gated_experts else None
         nn.init.kaiming_normal_(self.input_projection.weight)
         nn.init.kaiming_normal_(self.skip_projection.weight)
         nn.init.zeros_(self.out0.weight)
         if self.out1 is not None:
             nn.init.zeros_(self.out1.weight)
 
-    def _trunk(self, inp: torch.Tensor, cond: torch.Tensor, dstep: torch.Tensor):
-        x = F.leaky_relu(self.input_projection(inp), 0.4)  # (N, rc, F)
-        cond_up = self.cond_upsampler(cond).unsqueeze(1)  # (N, 1, F)
+    def forward(self, x_t, cond, dstep, pi=None):
+        """``x_t (B,1,T,F)``, ``cond (B,T,cond_dim)``, ``dstep (B,residual_hidden)``.
+
+        Returns predicted noise ``(B, 1, T, F)`` — a 2-expert mix when ``self.out1``
+        exists and ``pi (B,)`` is given.
+        """
+        x = F.leaky_relu(self.input_projection(x_t), 0.4)  # (B, C, T, F)
         skips = []
         for layer in self.residual_layers:
-            x, s = layer(x, cond_up, dstep)
+            x, s = layer(x, cond, dstep)
             skips.append(s)
         x = torch.stack(skips).sum(0) / math.sqrt(len(self.residual_layers))
-        return F.leaky_relu(self.skip_projection(x), 0.4)  # (N, rc, F)
-
-    def forward(self, inp, cond, dstep, pi=None):
-        """``inp (N,1,F)``, ``cond (N,cond_length)``, ``dstep (N,residual_hidden)``.
-
-        Returns the predicted noise ``(N, 1, F)`` — a 2-expert mix when ``self.out1``
-        exists and ``pi`` is given.
-        """
-        h = self._trunk(inp, cond, dstep)
-        eps0 = self.out0(h)
+        x = F.leaky_relu(self.skip_projection(x), 0.4)  # (B, C, T, F)
+        eps0 = self.out0(x)  # (B, 1, T, F)
         if self.out1 is not None and pi is not None:
-            eps1 = self.out1(h)
-            eps = (1.0 - pi).view(-1, 1, 1) * eps0 + pi.view(-1, 1, 1) * eps1
+            eps1 = self.out1(x)
+            v = (-1, 1, 1, 1)
+            eps = (1.0 - pi).view(v) * eps0 + pi.view(v) * eps1
         else:
             eps = eps0
         return eps
 
 
 class JumpGateScoreGrad(nn.Module):
-    """GRU encoder + WaveNet score net + trend head, with the JumpGate machinery."""
+    """biGRU encoder + joint window denoiser + trend head, with JumpGate machinery."""
 
     family = "joint_diffusion"
 
@@ -210,7 +233,7 @@ class JumpGateScoreGrad(nn.Module):
         if self.gate_grad not in ("detach", "flow"):
             raise ValueError(f"gate_grad must be detach|flow, got {self.gate_grad!r}")
 
-        # ScoreGrad backbone hyperparameters
+        # Backbone hyperparameters
         num_cells = config.get("sg_num_cells", 64)
         num_layers = config.get("sg_num_layers", 2)
         residual_hidden = config.get("sg_residual_hidden", 64)
@@ -221,29 +244,32 @@ class JumpGateScoreGrad(nn.Module):
             num_layers=num_layers,
             dropout=config.get("sg_rnn_dropout", 0.0) if num_layers > 1 else 0.0,
             batch_first=True,
+            bidirectional=True,
         )
+        cond_dim = 2 * num_cells  # bidirectional
         self.gphi = NoiseStateEstimator(
             F_dim, temb_dim, hidden=config.get("jg_gphi_hidden", 64)
         )
         self.dstep = DiffusionStepMLP(temb_dim, residual_hidden, self.w_conditioning)
-        self.score = EpsilonTheta(
-            target_dim=F_dim,
-            cond_length=num_cells,
+        self.denoiser = WindowDenoiser(
+            cond_dim=cond_dim,
             residual_hidden=residual_hidden,
             residual_layers=config.get("sg_residual_layers", 8),
             residual_channels=config.get("sg_residual_channels", 8),
             dilation_cycle_length=config.get("sg_dilation_cycle", 2),
+            level_heads=config.get("sg_level_heads", 2),
             gated_experts=self.gated_experts,
+            pad_mode=config.get("sg_pad_mode", "replicate"),
         )
 
         # trend head over the GRU context
-        self.pool = AttentionPool(num_cells, heads=config.get("jdl_pool_heads", 4))
+        self.pool = AttentionPool(cond_dim, heads=config.get("jdl_pool_heads", 4))
         self.cls_dropout = nn.Dropout(config.get("cls_dropout", 0.0))
-        self.classifier = nn.Linear(num_cells, 3)
+        self.classifier = nn.Linear(cond_dim, 3)
 
     def _encode(self, x_t: torch.Tensor) -> torch.Tensor:
-        """GRU context ``H (B, T, num_cells)`` from a window ``(B, 1, T, F)``."""
-        H, _ = self.gru(x_t.squeeze(1))  # (B, T, num_cells)
+        """GRU context ``H (B, T, 2*num_cells)`` from a window ``(B, 1, T, F)``."""
+        H, _ = self.gru(x_t.squeeze(1))  # (B, T, 2*num_cells)
         return H
 
     def _trend_logits(self, H: torch.Tensor) -> torch.Tensor:
@@ -256,26 +282,19 @@ class JumpGateScoreGrad(nn.Module):
         logW_oracle: torch.Tensor | None = None,
     ):
         """Return ``(eps_hat (B,1,T,F), logits (B,3), logW_hat (B,), pi_logit (B,))``."""
-        b, _, T, Fd = x_t.shape
         temb_t = sinusoidal_embedding(t, self.temb_dim)
         logW_hat, pi_logit = self.gphi(x_t, temb_t)
 
-        H = self._encode(x_t)  # (B, T, num_cells)
+        H = self._encode(x_t)  # (B, T, cond_dim)
         logits = self._trend_logits(H)
 
-        # per-timestep denoising: batch (B,T) rows, feature axis F as conv length
         dstep = self.dstep(t, logW_hat, logW_oracle)  # (B, residual_hidden)
-        dstep = dstep.repeat_interleave(T, dim=0)  # (B*T, residual_hidden)
-        cond = H.reshape(b * T, -1)  # (B*T, num_cells)
-        inp = x_t.squeeze(1).reshape(b * T, 1, Fd)  # (B*T, 1, F)
         pi = None
         if self.gated_experts:
             pi = torch.sigmoid(pi_logit)
             if self.gate_grad == "detach":
                 pi = pi.detach()
-            pi = pi.repeat_interleave(T, dim=0)  # (B*T,)
-        eps = self.score(inp, cond, dstep, pi)  # (B*T, 1, F)
-        eps_hat = eps.reshape(b, 1, T, Fd)
+        eps_hat = self.denoiser(x_t, H, dstep, pi)  # (B, 1, T, F)
         return eps_hat, logits, logW_hat, pi_logit
 
     @staticmethod
@@ -285,6 +304,6 @@ class JumpGateScoreGrad(nn.Module):
 
     @torch.no_grad()
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
-        """Feature-only inference: GRU + trend head on the clean window (no score net)."""
+        """Feature-only inference: GRU + trend head on the clean window (no denoiser)."""
         x = batch["x"].to(device).float()
         return self._trend_logits(self._encode(x))

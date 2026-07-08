@@ -5,27 +5,36 @@ for **epsilon prediction** and adds a supervised noise-state estimator ``g_phi``
 
     L_diff = || eps_hat - eps ||^2                        (epsilon MSE)
     L_W    = MSE(logW_hat, log W) + BCE(pi_logit, jump_flag)   (trains g_phi ONLY)
-    L_cls  = mean( gate * CE(logits, label) )
-    L      = L_diff + lambda_trend * L_cls + mu_W * L_W
+    L_jump = BCE(pi_logit, data_jump)     (self-supervised market-jump nudge)
+    L_cls  = sum( w_t * CE(logits, label) ) / sum(w_t)
+    L      = L_diff + lambda_trend * L_cls + mu_W * L_W + mu_jump * L_jump
 
 where ``(x_t, eps, W, jump_flag)`` come from ``fp.add_noise_eps`` (Lévy jump-
 diffusion, or the Gaussian bypass where ``W = sigma_t^2`` and ``jump_flag = 0``).
 
 ``g_phi``'s outputs feed the backbone detached (conditioning), the two-expert
 mixture (detached unless ``gate_grad="flow"``), and the classifier gate (detached),
-so ``g_phi`` is trained purely by ``L_W`` — while the rest of the network learns to
-*use* the inferred noise state.
+so ``g_phi`` is trained purely by the supervised terms — while the rest of the
+network learns to *use* the inferred noise state.
 
-Classifier gate (``soft_cls_gate``):
-  * off (default): hard ``low = a_t^2 >= 0.5`` (SNR>=1), CE averaged over the kept
-    subset — identical to the current levy trainer.
-  * on: soft ``gamma = sigmoid(kappa * (log a_t^2 - logW_hat.detach()))`` — a smooth,
-    W-aware version of the same "is the signal recoverable?" test.
+Trend-loss weighting over diffusion ``t`` (``cls_t_anneal``, default on):
+  * default: ``w_t = exp(-(t/t_max)/tau)`` with ``tau`` annealed geometrically from
+    ``cls_tau_start`` to ``cls_tau_end`` across epochs, so the trend head is trained
+    on ever-cleaner GRU passes — matching the feature-only inference at ``t = 0``
+    (removes the train/deploy mismatch).
+  * ``cls_t_anneal=false`` falls back to the ``soft_cls_gate`` (or hard SNR>=1) gate.
+
+``L_jump`` gives ``pi_logit`` a small, self-supervised *market-jump* signal
+(window increments exceeding ``jump_rv_k`` realized-vol units); keep ``mu_jump``
+small since ``pi_logit`` also carries the forward-process ``jump_flag`` in ``L_W``.
+
+Model selection / early stopping is on **trend-head macro-F1** (feature-only
+inference), not denoising MSE.
 
 Ablation flags (``w_conditioning`` none|inferred|oracle, ``gated_experts``,
-``soft_cls_gate``, ``gate_grad``): with all off the model is a plain epsilon-
-prediction joint U-Net and ``g_phi`` is a passive auxiliary head.  ``--process
-gaussian`` keeps the Gaussian bypass and makes ``logW_hat`` regress ``log sigma_t^2``.
+``soft_cls_gate``, ``gate_grad``).  ``--process gaussian`` keeps the Gaussian
+bypass; ``--baseline`` trains a plain-GRU classifier (GRU+pool+trend head on CE,
+no diffusion, no g_phi) — the ladder's no-diffusion reference point.
 
 Extra val diagnostics (logged, not in metrics.json): logW RMSE, jump AUROC, and
 per-gate-bin CE.
@@ -34,6 +43,13 @@ Usage::
 
     uv run python -m crypto.train_jumpgate_score configs/crypto/nobitex/jumpgatescore/btcirt_ofi_k10.json
     uv run python -m crypto.train_jumpgate_score ... --process gaussian   # ablation
+    uv run python -m crypto.train_jumpgate_score ... --baseline           # plain-GRU control
+
+W-conditioning ladder (decide by trend-head macro-F1)::
+
+    for w in none inferred oracle; do
+      uv run python -m crypto.train_jumpgate_score CONFIG   # set w_conditioning=$w in CONFIG
+    done
 """
 
 from __future__ import annotations
@@ -51,7 +67,7 @@ os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 import torch
 import torch.nn.functional as F
 from loguru import logger
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import classification_report, f1_score, roc_auc_score
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
@@ -104,17 +120,52 @@ def _soft_gate(
     return torch.sigmoid(kappa * (log_a2 - logW_hat.detach()))
 
 
-def _train_epoch(model, fp, loader, optimizer, lr_sched, config, device):
+def _cls_t_weight(t: torch.Tensor, t_max: int, tau: float) -> torch.Tensor:
+    """Per-sample weight concentrating the trend loss on small diffusion ``t``.
+
+    ``exp(-(t/t_max)/tau)`` — as ``tau`` anneals down over training the trend head
+    is trained on ever-cleaner GRU passes, so its input distribution matches the
+    feature-only inference path (clean window at ``t = 0``).
+    """
+    tf = t.float() / max(t_max, 1)
+    return torch.exp(-tf / max(tau, 1e-6))
+
+
+def _data_jump_flag(x0: torch.Tensor, k: float) -> torch.Tensor:
+    """Self-supervised jump target from the window itself (distinct from the
+    forward-process ``jump_flag``).
+
+    Flags a window whose largest per-timestep increment of the level-averaged
+    feature exceeds ``k`` realized-vol units — a data-driven "a jump happened here"
+    signal used to nudge ``pi_logit`` toward *market* jumps.
+    """
+    agg = x0.squeeze(1).mean(dim=-1)  # (B, T) level-averaged feature
+    dif = agg[:, 1:] - agg[:, :-1]  # (B, T-1) increments
+    rv = dif.std(dim=1).clamp_min(1e-8)  # (B,) realized vol
+    return (dif.abs().max(dim=1).values > k * rv).float()  # (B,)
+
+
+def _train_epoch(
+    model, fp, loader, optimizer, lr_sched, config, device, epoch, epochs, baseline
+):
     model.train()
     grad_clip = config.get("grad_clip", 1.0)
     lam_cls = config.get("lambda_trend", 1.0)
     mu_W = config.get("mu_W", 0.1)
+    mu_jump = config.get("mu_jump", 0.05)
+    jump_rv_k = config.get("jump_rv_k", 4.0)
     kappa = config.get("cls_gate_kappa", 4.0)
     soft_gate = bool(config.get("soft_cls_gate", False))
+    anneal = bool(config.get("cls_t_anneal", True))
+    tau0 = config.get("cls_tau_start", 0.5)
+    tau1 = config.get("cls_tau_end", 0.05)
     label_smoothing = config.get("label_smoothing", 0.0)
     oracle = config.get("w_conditioning", "none") == "oracle"
     t_max = fp.schedule.num_timesteps
     a_sq = (fp.schedule.a**2).to(device)
+    # geometric anneal of the trend-loss temperature over training
+    frac = epoch / max(epochs - 1, 1)
+    tau = tau0 * (tau1 / tau0) ** frac
 
     tot = dif = cls = lw = 0.0
     n = 0
@@ -122,34 +173,51 @@ def _train_epoch(model, fp, loader, optimizer, lr_sched, config, device):
         x0 = batch["x"].to(device).float()  # (B, 1, T, F)
         label = batch["label"].to(device)
         b = x0.shape[0]
-        t = torch.randint(0, t_max, (b,), device=device)
 
-        x_t, eps, W, jump_flag = fp.add_noise_eps(x0, t)
-        logW = torch.log(W.clamp_min(1e-12))  # (B,)
-        eps_hat, logits, logW_hat, pi_logit = model(
-            x_t, t, logW_oracle=logW if oracle else None
-        )
-
-        # epsilon MSE
-        diff_loss = F.mse_loss(eps_hat, eps)
-
-        # noise-state supervision (trains g_phi only; its outputs are detached elsewhere)
-        L_W = F.mse_loss(logW_hat, logW) + F.binary_cross_entropy_with_logits(
-            pi_logit, jump_flag
-        )
-
-        # trend loss with (soft or hard) noise-aware gate
-        ce = F.cross_entropy(
-            logits, label, reduction="none", label_smoothing=label_smoothing
-        )
-        if soft_gate:
-            gate = _soft_gate(a_sq[t], logW_hat, kappa)
-            cls_loss = (gate * ce).mean()
+        if baseline:
+            # plain-GRU-classifier control: no diffusion, no g_phi — CE on the clean
+            # pass only (same GRU + pool + trend head as feature-only inference).
+            logits = model._trend_logits(model._encode(x0))
+            cls_loss = F.cross_entropy(logits, label, label_smoothing=label_smoothing)
+            diff_loss = logits.new_zeros(())
+            L_W = logits.new_zeros(())
+            loss = cls_loss
         else:
-            low = a_sq[t] >= 0.5
-            cls_loss = ce[low].mean() if low.any() else logits.new_zeros(())
+            t = torch.randint(0, t_max, (b,), device=device)
+            x_t, eps, W, jump_flag = fp.add_noise_eps(x0, t)
+            logW = torch.log(W.clamp_min(1e-12))  # (B,)
+            eps_hat, logits, logW_hat, pi_logit = model(
+                x_t, t, logW_oracle=logW if oracle else None
+            )
 
-        loss = diff_loss + lam_cls * cls_loss + mu_W * L_W
+            # epsilon MSE
+            diff_loss = F.mse_loss(eps_hat, eps)
+
+            # noise-state supervision: forward jump_flag (L_W) + a small self-supervised
+            # data-jump nudge on the same pi_logit (keep mu_jump small — two targets).
+            L_W = F.mse_loss(logW_hat, logW) + F.binary_cross_entropy_with_logits(
+                pi_logit, jump_flag
+            )
+            L_jump = F.binary_cross_entropy_with_logits(
+                pi_logit, _data_jump_flag(x0, jump_rv_k)
+            )
+
+            # trend loss: annealed-toward-small-t weighting (default), else the
+            # soft/hard noise-aware gate.
+            ce = F.cross_entropy(
+                logits, label, reduction="none", label_smoothing=label_smoothing
+            )
+            if anneal:
+                w = _cls_t_weight(t, t_max, tau)
+                cls_loss = (w * ce).sum() / w.sum().clamp_min(1e-8)
+            elif soft_gate:
+                gate = _soft_gate(a_sq[t], logW_hat, kappa)
+                cls_loss = (gate * ce).mean()
+            else:
+                low = a_sq[t] >= 0.5
+                cls_loss = ce[low].mean() if low.any() else logits.new_zeros(())
+
+            loss = diff_loss + lam_cls * cls_loss + mu_W * L_W + mu_jump * L_jump
 
         optimizer.zero_grad()
         loss.backward()
@@ -163,21 +231,34 @@ def _train_epoch(model, fp, loader, optimizer, lr_sched, config, device):
         lw += L_W.item()
         n += 1
     n = max(n, 1)
-    return {"total": tot / n, "diff": dif / n, "trend": cls / n, "L_W": lw / n}
+    return {
+        "total": tot / n,
+        "diff": dif / n,
+        "trend": cls / n,
+        "L_W": lw / n,
+        "tau": tau,
+    }
 
 
 @torch.no_grad()
 def _validate(model, loader, device):
-    """Feature-only trend metrics (drives checkpointing / early stopping)."""
+    """Feature-only trend metrics. Macro-F1 drives checkpointing / early stopping
+    (inference is feature-only, so we select on trend-head F1, not denoising MSE)."""
     model.eval()
-    ce, correct, n = 0.0, 0, 0
+    ce, n = 0.0, 0
+    y_true, y_pred = [], []
     for batch in loader:
         label = batch["label"].to(device)
         logits = model.predict(batch, device)
         ce += F.cross_entropy(logits, label).item()
-        correct += (logits.argmax(1) == label).sum().item()
+        y_true.extend(label.cpu().tolist())
+        y_pred.extend(logits.argmax(1).cpu().tolist())
         n += len(label)
-    return ce / max(len(loader), 1), correct / max(n, 1)
+    acc = sum(int(a == b) for a, b in zip(y_true, y_pred)) / max(n, 1)
+    f1 = float(
+        f1_score(y_true, y_pred, average="macro", labels=[0, 1, 2], zero_division=0)
+    )
+    return ce / max(len(loader), 1), acc, f1
 
 
 @torch.no_grad()
@@ -273,6 +354,12 @@ def main() -> None:
         default=None,
         help="ablation override for config['diffusion_process']",
     )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="plain-GRU-classifier control: train only GRU+pool+trend head on CE "
+        "(no diffusion, no g_phi) — the ladder's no-diffusion reference point",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -290,9 +377,10 @@ def main() -> None:
 
     device = resolve_device(config["device"])
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tag = "baseline" if args.baseline else process
     ckpt_dir = (
         Path(config["checkpoint_dir"])
-        / f"jumpgatescore_{process}_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
+        / f"jumpgatescore_{tag}_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     logger.add(ckpt_dir / "train.log", level="DEBUG")
@@ -358,32 +446,63 @@ def main() -> None:
         optimizer, config, config["epochs"] * len(train_loader)
     )
 
-    best, patience, history = float("inf"), 0, []
-    for epoch in range(config["epochs"]):
-        tr = _train_epoch(model, fp, train_loader, optimizer, lr_sched, config, device)
-        val_ce, val_acc = _validate(model, val_loader, device)
-        ns = _validate_noise_state(model, fp, val_loader, config, device)
-        logger.info(
-            "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} L_W={:.4f}"
-            " | val_ce={:.4f} acc={:.4f}"
-            " | logW_rmse={:.3f} jump_auroc={:.3f} gate_ce={}",
+    # select on trend-head macro-F1 (feature-only inference), not denoising MSE
+    best, patience, history = float("-inf"), 0, []
+    epochs = config["epochs"]
+    for epoch in range(epochs):
+        tr = _train_epoch(
+            model,
+            fp,
+            train_loader,
+            optimizer,
+            lr_sched,
+            config,
+            device,
             epoch,
-            tr["total"],
-            tr["diff"],
-            tr["trend"],
-            tr["L_W"],
-            val_ce,
-            val_acc,
-            ns["logW_rmse"],
-            ns["jump_auroc"],
-            "[" + ", ".join(f"{c:.2f}" for c in ns["gate_bin_ce"]) + "]",
+            epochs,
+            args.baseline,
         )
-        history.append(
-            {"epoch": epoch, **tr, "val_ce": val_ce, "val_acc": val_acc, **ns}
-        )
+        val_ce, val_acc, val_f1 = _validate(model, val_loader, device)
+        row = {
+            "epoch": epoch,
+            **tr,
+            "val_ce": val_ce,
+            "val_acc": val_acc,
+            "val_f1": val_f1,
+        }
+        if args.baseline:
+            logger.info(
+                "epoch {} | trend={:.4f} | val_ce={:.4f} acc={:.4f} f1={:.4f}",
+                epoch,
+                tr["trend"],
+                val_ce,
+                val_acc,
+                val_f1,
+            )
+        else:
+            ns = _validate_noise_state(model, fp, val_loader, config, device)
+            row.update(ns)
+            logger.info(
+                "epoch {} | total={:.4f} diff={:.4f} trend={:.4f} L_W={:.4f} tau={:.3f}"
+                " | val_ce={:.4f} acc={:.4f} f1={:.4f}"
+                " | logW_rmse={:.3f} jump_auroc={:.3f} gate_ce={}",
+                epoch,
+                tr["total"],
+                tr["diff"],
+                tr["trend"],
+                tr["L_W"],
+                tr["tau"],
+                val_ce,
+                val_acc,
+                val_f1,
+                ns["logW_rmse"],
+                ns["jump_auroc"],
+                "[" + ", ".join(f"{c:.2f}" for c in ns["gate_bin_ce"]) + "]",
+            )
+        history.append(row)
 
-        if val_ce < best:
-            best, patience = val_ce, 0
+        if val_f1 > best:
+            best, patience = val_f1, 0
             torch.save(
                 {
                     "model": model.state_dict(),
