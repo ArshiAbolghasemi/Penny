@@ -34,7 +34,7 @@
   "levy_table_num_r": 512,
   "levy_table_mc": 20000,
   "w_conditioning": "none",
-  "gated_experts": false,
+  "gated_experts": true,
   "gate_grad": "detach",
   "mu_W": 0.1,
   "jg_gphi_hidden": 64,
