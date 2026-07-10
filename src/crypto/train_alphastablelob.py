@@ -98,7 +98,7 @@ def _train_epoch(model, diff, loader, optimizer, lr_sched, config, device, do_di
 
         tot += loss.item()
         clsm += cls_loss.item()
-        scm += float(score_loss)
+        scm += score_loss.item()
         n += 1
     n = max(n, 1)
     return {"total": tot / n, "cls": clsm / n, "score": scm / n}
