@@ -44,5 +44,5 @@
   "astable_feat_mix": "conv",
   "astable_feat_heads": 2,
   "astable_pad_mode": "reflect",
-  "use_bin": true
+  "use_bin": false
 }
