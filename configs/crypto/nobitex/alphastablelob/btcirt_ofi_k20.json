@@ -26,7 +26,7 @@
   "lambda_diff": 1.0,
   "cls_dropout": 0.2,
   "label_smoothing": 0.1,
-  "astable_alpha": 1.7,
+  "astable_alpha": 1.5,
   "astable_num_r": 256,
   "astable_mc": 8192,
   "astable_clip_q": 0.999,
