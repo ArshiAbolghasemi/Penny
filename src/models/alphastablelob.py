@@ -1,27 +1,23 @@
-"""StableLOB: improved-DDPM joint diffusion-classifier for feature-only LOB trend.
+"""AlphaStableLOB: α-stable joint diffusion-classifier for feature-only LOB trend.
 
 Shares the *trunk idea* of :class:`~models.jumpgatelob.JumpGateLOB` — a local
 recurrent encoder followed by a **single** temporal self-attention layer, feeding a
 trend head (kept at inference) and a grid diffusion head (a training-time auxiliary)
-— but swaps JumpGateLOB's Lévy ε-prediction for the **improved-DDPM** noise/denoise
-recipe (Nichol & Dhariwal 2021; :mod:`models.iddpm`):
+— but the generative branch uses a genuine **α-stable (Lévy-stable)** forward process
+(:mod:`models.alphastable`): heavy, power-law-tailed noise (infinite variance for
+``α < 2``) that matches the fat tails of high-frequency LOB returns.
 
-  * a **cosine** noise schedule,
-  * **learned reverse variance**: the diffusion head predicts *two* channels per
-    element, ``(ε̂, v̂)``, where ``v̂`` interpolates the reverse log-variance between
-    ``β̃_t`` and ``β_t``,
-  * a **hybrid** ``L_simple + λ·L_vlb`` objective (in the trainer).
-
-The name refers to the *training stability* the improved-DDPM likelihood weighting
-buys (learned variance + cosine schedule) — it is **not** latent Stable Diffusion
-(no VAE / latent space; the model diffuses the raw feature window directly).
+Because the α-stable score has no closed form, the diffusion head is trained by
+**generalized denoising score matching** against the tabulated isotropic score
+``-u·h(|u|)`` of the subordinated-Gaussian representation (see
+:mod:`models.alphastable`).  The head therefore predicts the **score** (one channel),
+not ``(ε, v)``.
 
 Trunk (run once per pass):
 
   1. optional ``BiN`` front-end (per-window bilinear normalisation),
   2. **local encoder** — a (bi)GRU (or temporal-conv) → per-timestep context
-     ``H₀ (B, T, D)``.  The window ends at the prediction point and the label lives
-     strictly outside it, so a bidirectional pass leaks nothing,
+     ``H₀ (B, T, D)``,
   3. **one** DiT-style **temporal self-attention** layer over ``T`` with sinusoidal
      positions, adaLN-Zero conditioned on the timestep embedding ``c``.
 
@@ -29,12 +25,12 @@ Two heads share the trunk context ``H``:
 
   * **trend head** — attention-pool over ``T`` → 3 logits.  Feature-only inference
     runs only the trunk + this head on the clean window (no reverse sampling).
-  * **diffusion head** — a small flat, constant-``(T,F)`` grid net; each block mixes
-    book levels over ``F`` and injects the trunk context, adaLN-Zero conditioned on
-    the timestep.  It outputs ``(ε̂, v̂)`` for the learned-variance objective.
+  * **diffusion head** — a flat, constant-``(T,F)`` grid net predicting the α-stable
+    **score** ``ŝ (B, 1, T, F)``, adaLN-Zero conditioned on the timestep and injected
+    with the trunk context.
 
 Inference contract matches every other crypto model: ``predict(batch, device) →
-logits (B, 3)``.
+logits (B, 3)``.  The heavy-tailed diffusion is a training-time regulariser only.
 """
 
 from __future__ import annotations
@@ -132,7 +128,7 @@ class DiffBlock(nn.Module):
 
 
 class DiffHead(nn.Module):
-    """Flat grid net predicting ``(ε̂, v̂)`` for the learned-variance objective."""
+    """Flat grid net predicting the α-stable score ``ŝ (B, 1, T, F)``."""
 
     def __init__(
         self,
@@ -150,48 +146,45 @@ class DiffHead(nn.Module):
             DiffBlock(channels, cond_dim, ctx_dim, feat_mix, feat_heads, pad_mode)
             for _ in range(n_blocks)
         )
-        # 2 output channels: ε (mean) and v (variance interpolation).
-        self.out = nn.Conv2d(channels, 2, 1)
+        self.out = nn.Conv2d(channels, 1, 1)  # single-channel score
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
 
-    def forward(self, x_t, c, H):
-        x = self.input_projection(x_t)  # (B, C, T, F)
+    def forward(self, x_in, c, H):
+        x = self.input_projection(x_in)  # (B, C, T, F)
         for blk in self.blocks:
             x = blk(x, c, H)
-        o = self.out(x)  # (B, 2, T, F)
-        eps, v = o[:, :1], o[:, 1:2]  # each (B, 1, T, F)
-        return eps, v
+        return self.out(x)  # (B, 1, T, F) score
 
 
-class StableLOB(nn.Module):
-    """(bi)GRU + one temporal-attention trunk; trend head + learned-variance diff head."""
+class AlphaStableLOB(nn.Module):
+    """(bi)GRU + one temporal-attention trunk; trend head + α-stable score head."""
 
     family = "joint_diffusion"
 
     def __init__(self, config: dict) -> None:
         super().__init__()
         F_dim = config["n_features"]
-        temb_dim = config.get("stable_time_emb", 128)
+        temb_dim = config.get("astable_time_emb", 128)
         self.temb_dim = temb_dim
         self.F = F_dim
 
-        # ---- BiN front-end (matches JumpGateLOB) ----------------------------
+        # ---- BiN front-end --------------------------------------------------
         self.bin = (
             BiN(config["T_past"], F_dim) if config.get("use_bin", False) else None
         )
 
         # ---- local encoder --------------------------------------------------
-        self.local = config.get("stable_local", "gru")
-        hidden = config.get("stable_gru_hidden", 64)
-        bidir = bool(config.get("stable_bidirectional", True))
+        self.local = config.get("astable_local", "gru")
+        hidden = config.get("astable_gru_hidden", 64)
+        bidir = bool(config.get("astable_bidirectional", True))
         if self.local == "gru":
             self.gru = nn.GRU(
                 input_size=F_dim,
                 hidden_size=hidden,
-                num_layers=config.get("stable_gru_layers", 2),
-                dropout=config.get("stable_gru_dropout", 0.0)
-                if config.get("stable_gru_layers", 2) > 1
+                num_layers=config.get("astable_gru_layers", 2),
+                dropout=config.get("astable_gru_dropout", 0.0)
+                if config.get("astable_gru_layers", 2) > 1
                 else 0.0,
                 batch_first=True,
                 bidirectional=bidir,
@@ -206,7 +199,7 @@ class StableLOB(nn.Module):
                 nn.Conv1d(D, D, 3, padding=1, padding_mode="replicate"),
             )
         else:
-            raise ValueError(f"stable_local must be gru|conv, got {self.local!r}")
+            raise ValueError(f"astable_local must be gru|conv, got {self.local!r}")
         self.D = D
 
         # ---- timestep conditioning c = MLP(emb(t)) --------------------------
@@ -217,25 +210,25 @@ class StableLOB(nn.Module):
         # ---- one temporal-attention layer -----------------------------------
         self.temporal = TemporalAttnBlock(
             D,
-            heads=config.get("stable_attn_heads", 4),
+            heads=config.get("astable_attn_heads", 4),
             cond_dim=temb_dim,
-            dropout=config.get("stable_attn_dropout", 0.1),
+            dropout=config.get("astable_attn_dropout", 0.1),
         )
 
         # ---- trend head ------------------------------------------------------
-        self.pool = AttentionPool(D, heads=config.get("stable_pool_heads", 4))
+        self.pool = AttentionPool(D, heads=config.get("astable_pool_heads", 4))
         self.cls_dropout = nn.Dropout(config.get("cls_dropout", 0.0))
         self.classifier = nn.Linear(D, 3)
 
-        # ---- diffusion head (ε, v) ------------------------------------------
+        # ---- diffusion (score) head -----------------------------------------
         self.diff_head = DiffHead(
-            channels=config.get("stable_diff_channels", 16),
+            channels=config.get("astable_diff_channels", 16),
             cond_dim=temb_dim,
             ctx_dim=D,
-            n_blocks=config.get("stable_diff_blocks", 2),
-            feat_mix=config.get("stable_feat_mix", "conv"),
-            feat_heads=config.get("stable_feat_heads", 2),
-            pad_mode=config.get("stable_pad_mode", "reflect"),
+            n_blocks=config.get("astable_diff_blocks", 2),
+            feat_mix=config.get("astable_feat_mix", "conv"),
+            feat_heads=config.get("astable_feat_heads", 2),
+            pad_mode=config.get("astable_pad_mode", "reflect"),
         )
 
     # ---- trunk --------------------------------------------------------------
@@ -273,17 +266,17 @@ class StableLOB(nn.Module):
         H, _ = self.trunk(x, t)
         return self._trend_logits(H)
 
-    def diffuse(self, x_t: torch.Tensor, t: torch.Tensor):
-        """Predict ``(ε̂, v̂)`` on the *noised* window at timestep ``t``."""
-        H, c = self.trunk(x_t, t)
-        return self.diff_head(x_t, c, H)
+    def score(self, x_in: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Predict the α-stable score from the (EDM-scaled) noised window at ``t``."""
+        H, c = self.trunk(x_in, t)
+        return self.diff_head(x_in, c, H)
 
-    def forward(self, x_t: torch.Tensor, t: torch.Tensor):
-        """Joint pass: ``(ε̂, v̂, logits)``."""
-        H, c = self.trunk(x_t, t)
+    def forward(self, x_in: torch.Tensor, t: torch.Tensor):
+        """Joint pass: ``(ŝ, logits)``."""
+        H, c = self.trunk(x_in, t)
         logits = self._trend_logits(H)
-        eps_hat, v_hat = self.diff_head(x_t, c, H)
-        return eps_hat, v_hat, logits
+        s_hat = self.diff_head(x_in, c, H)
+        return s_hat, logits
 
     def trunk_parameters(self):
         """All params except the trend head (for a frozen-trunk phase-2 probe)."""
