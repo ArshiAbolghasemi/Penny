@@ -38,6 +38,13 @@ NativeExplanation = (
     TABLExplanation | DLAExplanation | RolloutExplanation | JumpGateExplanation
 )
 
+# Models whose native explanation has genuine per-feature resolution (a real
+# (T, F) map) vs. a (T,) time-only signal broadcast across F for display —
+# see the normalisation note above. Any per-feature ranking (e.g. "top
+# features") computed from a broadcast model's comparable map is a tie by
+# construction and should not be presented as a real ranking.
+HAS_FEATURE_RESOLUTION = {"dla": True, "jointdit": True, "ctabl": False, "jumpgatelob": False}
+
 
 def _normalize(m: torch.Tensor) -> torch.Tensor:
     """Min-max normalise a non-negative map to [0, 1]; all-zero maps pass through."""

@@ -44,6 +44,7 @@ from utils.training import resolve_device
 from xai.aggregate import aggregate_maps, top_features
 from xai.attribution import classifier_fn, target_classes
 from xai.compare import (
+    HAS_FEATURE_RESOLUTION,
     compare_models,
     gradient_attribution_to_comparable_map,
     time_profile,
@@ -61,19 +62,30 @@ MODEL_NAMES = ["ctabl", "dla", "jointdit", "jumpgatelob"]
 def main() -> None:
     parser = argparse.ArgumentParser()
     for name in MODEL_NAMES:
-        parser.add_argument(f"--{name}", required=True, help=f"checkpoint path for {name}")
+        parser.add_argument(f"--{name}", default=None, help=f"checkpoint path for {name}")
     parser.add_argument("--n-per-class", type=int, default=6)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
+
+    active_names = [name for name in MODEL_NAMES if getattr(args, name) is not None]
+    if len(active_names) < 2:
+        raise SystemExit(
+            "need at least 2 of --ctabl/--dla/--jointdit/--jumpgatelob to compare"
+        )
+    if len(active_names) < len(MODEL_NAMES):
+        logger.warning(
+            "comparing only {} (no checkpoint given for {})",
+            active_names, [n for n in MODEL_NAMES if n not in active_names],
+        )
 
     device = resolve_device("cuda")
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     loaded = {
-        name: load_checkpoint(name, getattr(args, name), device) for name in MODEL_NAMES
+        name: load_checkpoint(name, getattr(args, name), device) for name in active_names
     }
-    ref_config = loaded["ctabl"].config
+    ref_config = loaded[active_names[0]].config
     n_levels = ref_config["n_lob_levels"]
     feature_mode = ref_config.get("feature_mode", "ofi")
     for name, lm in loaded.items():
@@ -94,21 +106,21 @@ def main() -> None:
     samples = sample_by_class(test_ds, n_per_class=args.n_per_class)
 
     grad_config = GradientAttributionConfig()
-    per_model_maps: dict[str, list[np.ndarray]] = {n: [] for n in MODEL_NAMES}
+    per_model_maps: dict[str, list[np.ndarray]] = {n: [] for n in active_names}
     all_agreements = []
-    all_deletion = {n: [] for n in MODEL_NAMES}
+    all_deletion = {n: [] for n in active_names}
 
     for cls, windows in samples.items():
         if not windows:
             continue
         x_by_model = {
-            name: stack_windows(windows).to(device).float() for name in MODEL_NAMES
+            name: stack_windows(windows).to(device).float() for name in active_names
         }
         for i, w in enumerate(windows):
             comparable_maps: dict[str, torch.Tensor] = {}
             time_profiles: dict[str, torch.Tensor] = {}
 
-            for name in MODEL_NAMES:
+            for name in active_names:
                 model = loaded[name].model
                 x_single = x_by_model[name][i : i + 1]
                 fn = classifier_fn(name, model)
@@ -154,7 +166,7 @@ def main() -> None:
 
     # ---- 2. Faithfulness (deletion) summary -------------------------------
     faithfulness_summary: dict[str, dict[str, float]] = {}
-    for name in MODEL_NAMES:
+    for name in active_names:
         curves = all_deletion[name]
         gaps = [c.faithfulness_gap for c in curves]
         faithfulness_summary[name] = {
@@ -170,22 +182,36 @@ def main() -> None:
 
     # ---- 3. Aggregate per-level / per-lag importance ----------------------
     agg_summary: dict[str, dict] = {}
-    fig, axes = plt.subplots(2, len(MODEL_NAMES), figsize=(5 * len(MODEL_NAMES), 8))
-    for col, name in enumerate(MODEL_NAMES):
+    fig, axes = plt.subplots(2, len(active_names), figsize=(5 * len(active_names), 8), squeeze=False)
+    for col, name in enumerate(active_names):
         maps = [torch.as_tensor(m) for m in per_model_maps[name]]
         agg = aggregate_maps(name, "native", maps, n_levels, feature_mode)
-        agg_summary[name] = {
-            "top_features": top_features(agg, k=10),
-        }
         axes[0, col].bar(range(len(agg.lag_importance)), agg.lag_importance)
         axes[0, col].set_title(f"{name}\nlag importance (0=oldest)")
         axes[0, col].set_xlabel("time step")
 
-        order = np.argsort(agg.feature_importance)[::-1][:15]
-        axes[1, col].barh(range(len(order)), agg.feature_importance[order][::-1])
-        axes[1, col].set_yticks(range(len(order)))
-        axes[1, col].set_yticklabels([agg.feature_labels[i] for i in order][::-1], fontsize=7)
-        axes[1, col].set_title("top-15 features")
+        if HAS_FEATURE_RESOLUTION.get(name, False):
+            agg_summary[name] = {"top_features": top_features(agg, k=10)}
+            order = np.argsort(agg.feature_importance)[::-1][:15]
+            axes[1, col].barh(range(len(order)), agg.feature_importance[order][::-1])
+            axes[1, col].set_yticks(range(len(order)))
+            axes[1, col].set_yticklabels([agg.feature_labels[i] for i in order][::-1], fontsize=7)
+            axes[1, col].set_title("top-15 features")
+        else:
+            # This model's native map is a (T,) time-only signal broadcast
+            # across every feature (see xai.compare.HAS_FEATURE_RESOLUTION) —
+            # every feature is tied by construction, so a "top features" bar
+            # chart here would show 15 identical bars and mislead a reader.
+            agg_summary[name] = {
+                "top_features": "n/a (no native per-feature resolution — see time-lag panel above)"
+            }
+            axes[1, col].axis("off")
+            axes[1, col].text(
+                0.5, 0.5,
+                "no per-feature resolution\n(see time-lag panel above)",
+                ha="center", va="center", wrap=True, fontsize=9,
+            )
+            axes[1, col].set_title("top-15 features")
     fig.tight_layout()
     fig.savefig(out_dir / "aggregate_importance.png", dpi=150)
     plt.close(fig)

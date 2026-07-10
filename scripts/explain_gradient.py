@@ -68,7 +68,11 @@ def main() -> None:
         ig_steps=args.ig_steps, gradient_shap_samples=args.gradshap_samples
     )
 
-    out_dir = Path(args.out) if args.out else ckpt_path.parent / "xai" / "gradient"
+    # ckpt_path may be a best.pt file or its containing checkpoint dir (see
+    # xai.registry.load_checkpoint) — resolve to the checkpoint dir either way
+    # so the default output path is unique per model/run, not per shared parent.
+    ckpt_dir = ckpt_path.parent if ckpt_path.suffix == ".pt" else ckpt_path
+    out_dir = Path(args.out) if args.out else ckpt_dir / "xai" / "gradient"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     mean_base = mean_baseline(test_ds).to(device)
