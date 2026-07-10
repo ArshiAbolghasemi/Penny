@@ -1,4 +1,4 @@
-"""Two-phase diffusion→probe training in ONE command (backbone-agnostic).
+"""Two-phase diffusion→probe training in ONE command (JointDiT backbone).
 
 Runs both decoupled phases sequentially in a single process — Phase 1 (generative)
 then Phase 2 (frozen-trunk probe) — without ever sharing a loss between them:
@@ -13,11 +13,9 @@ then Phase 2 (frozen-trunk probe) — without ever sharing a loss between them:
            and train ONLY a probe (temporal aggregator + shallow MLP head) with an
            ordinal-aware, class-weighted loss.
 
-The backbone is chosen by the config: ``backbone: "dit"`` (JointDiT) or
-``backbone: "diffusion"``/``"unet"`` (2D-UNet JointDiffusion) — neither
-architecture is modified; only ``denoise`` is used.  The probe aggregator is
-``mlp`` (mean-pool → MLP, default for DiT) or ``attn`` (attention-pool, default
-for U-Net), set per config.
+The backbone is ``backbone: "dit"`` (:class:`JointDiT`) — the architecture is not
+modified; only ``denoise`` is used.  The probe aggregator (``mlp``: mean-pool → MLP,
+or ``attn``: attention-pool) is set per config.
 
 Config layout: a shared base plus optional ``phase1`` / ``phase2`` override blocks,
 e.g. ``{"epochs": 80, ..., "phase2": {"epochs": 40, "lr": 1e-3}}``.

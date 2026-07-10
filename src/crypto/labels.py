@@ -12,7 +12,7 @@ Label assignment:
 ``alpha`` is calibrated on the **training set** to the 33.3rd percentile of
 |trend_ratio|, producing roughly balanced class frequencies.
 
-Shared by ``crypto.deeplob``, ``crypto.jointdiff``, and ``crypto.lobtransformer``.
+Shared across the crypto training scripts.
 """
 
 from __future__ import annotations

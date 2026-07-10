@@ -1,12 +1,12 @@
-"""Shared machinery for the decoupled two-phase train procedure (backbone-agnostic).
+"""Shared machinery for the decoupled two-phase train procedure.
 
-The procedure applies UNCHANGED to any joint generative backbone that exposes the
+The procedure applies to any joint generative backbone that exposes the
 ``denoise(x, sigma) -> (x0_hat, logits)`` contract — currently :class:`JointDiT`
-(DiT trunk) and :class:`JointDiffusion` (2D-UNet trunk).  Neither architecture is
-modified: Phase 1 trains the full generative pathway on a single generative
-objective (classifier excluded from the loss graph), Phase 2 freezes that trunk
-and trains only a probe head + temporal aggregator on intermediate activations
-tapped from **one** preconditioned forward pass (no sampling).
+(DiT trunk).  The architecture is not modified: Phase 1 trains the full generative
+pathway on a single generative objective (classifier excluded from the loss graph),
+Phase 2 freezes that trunk and trains only a probe head + temporal aggregator on
+intermediate activations tapped from **one** preconditioned forward pass (no
+sampling).
 
 This module provides the parts both phases share:
 
@@ -30,19 +30,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.jointdiff import JointDiffusion
 from models.jointdit import JointDiT
 from models.modules import AttentionPool
 
 # Backbones exposing denoise(x, sigma) -> (x0_hat, logits); add new trunks here.
-_BACKBONES = {"jointdit": JointDiT, "jointdiff": JointDiffusion}
-# Friendly aliases so configs can say "dit" / "diffusion" / "unet".
-_ALIASES = {
-    "dit": "jointdit",
-    "diffusion": "jointdiff",
-    "unet": "jointdiff",
-    "jointdiffusion": "jointdiff",
-}
+_BACKBONES = {"jointdit": JointDiT}
+# Friendly alias so configs can say "dit".
+_ALIASES = {"dit": "jointdit"}
 
 
 def build_backbone(config: dict) -> nn.Module:
@@ -60,15 +54,13 @@ def build_backbone(config: dict) -> nn.Module:
 def default_tap_blocks(model: nn.Module) -> list[int]:
     """Indices of the intermediate blocks Phase 2 taps by default.
 
-    DiT trunk → the decoder-half DiT blocks (mirror of the U-ViT skips); U-Net
-    trunk → the decoder (``ups``) blocks.  Both are "mid/late decoder" activations
-    that still carry per-time-step structure (not the final denoiser output).
+    The decoder-half DiT blocks (mirror of the U-ViT skips) — "mid/late decoder"
+    activations that still carry per-time-step structure (not the final denoiser
+    output).
     """
     if hasattr(model, "blocks"):  # DiT
         depth = len(model.blocks)
         return list(range(depth // 2, depth))
-    if hasattr(model, "ups"):  # 2D-UNet
-        return list(range(len(model.ups)))
     raise TypeError(f"no known tap points on {type(model).__name__}")
 
 
@@ -76,28 +68,20 @@ def tap_modules(model: nn.Module, indices: list[int]) -> list[nn.Module]:
     """Resolve tap-block indices to the actual sub-modules to hook."""
     if hasattr(model, "blocks"):
         return [model.blocks[i] for i in indices]
-    if hasattr(model, "ups"):
-        return [model.ups[i] for i in indices]
     raise TypeError(f"no known tap points on {type(model).__name__}")
 
 
 def _tap_to_time_feat(act: torch.Tensor, grid: tuple[int, int] | None) -> torch.Tensor:
-    """Pool a tapped activation's column axis → per-time-step features ``(B, T, f)``.
+    """Pool a DiT token activation's column patches → per-time-step features.
 
-    Handles both backbones unchanged:
-      * DiT token activation ``(B, N, D)`` with patch grid ``(gt, gf)`` →
-        reshape to ``(B, gt, gf, D)`` and mean over the column patches ``gf``.
-      * U-Net feature map ``(B, C, H, W)`` → mean over the column axis ``W`` and
-        move channels last.
+    ``(B, N, D)`` with patch grid ``(gt, gf)`` → reshape to ``(B, gt, gf, D)`` and
+    mean over the column patches ``gf`` → ``(B, gt, D)``.
     """
-    if act.dim() == 3:  # DiT tokens
-        assert grid is not None, "DiT tap needs the patch grid (gt, gf)"
-        gt, gf = grid
-        b, n, d = act.shape
-        return act.reshape(b, gt, gf, d).mean(dim=2)  # (B, gt, D)
-    if act.dim() == 4:  # U-Net map (B, C, H, W)
-        return act.mean(dim=3).transpose(1, 2)  # (B, H, C)
-    raise ValueError(f"unexpected tap ndim={act.dim()}")
+    assert act.dim() == 3, f"unexpected tap ndim={act.dim()}"
+    assert grid is not None, "DiT tap needs the patch grid (gt, gf)"
+    gt, gf = grid
+    b, n, d = act.shape
+    return act.reshape(b, gt, gf, d).mean(dim=2)  # (B, gt, D)
 
 
 def _resample_time(x: torch.Tensor, length: int) -> torch.Tensor:

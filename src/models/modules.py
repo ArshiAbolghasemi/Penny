@@ -1,7 +1,7 @@
 """Shared building blocks used across model files.
 
 Centralised here so each model file imports from one place instead of
-duplicating definitions or chaining imports through jointdiff.
+duplicating definitions or chaining imports through other model files.
 """
 
 from __future__ import annotations
@@ -149,3 +149,92 @@ class Up(nn.Module):
 def count_parameters(model: nn.Module) -> int:
     """Count trainable parameters."""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+# ── JumpGate shared blocks (used by JumpGateLOB) ────────────────────────────
+
+
+class NoiseStateEstimator(nn.Module):
+    """g_phi: infer ``(logW_hat, pi_logit)`` from the noised window and timestep.
+
+    Strided ``Conv1d`` stack over the time axis (features as channels) → global
+    average pool → MLP on the pooled vector concatenated with the timestep
+    embedding.  Outputs two scalars per sample.
+    """
+
+    def __init__(
+        self, n_features: int, temb_dim: int, hidden: int = 64, n_conv: int = 3
+    ) -> None:
+        super().__init__()
+        chs = [n_features] + [hidden] * n_conv
+        self.convs = nn.ModuleList(
+            nn.Conv1d(chs[i], chs[i + 1], kernel_size=3, stride=2, padding=1)
+            for i in range(n_conv)
+        )
+        self.act = nn.SiLU()
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden + temb_dim, hidden), nn.SiLU(), nn.Linear(hidden, 2)
+        )
+
+    def forward(
+        self, x_t: torch.Tensor, temb: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        h = x_t.squeeze(1).transpose(1, 2)  # (B, F, T)
+        for conv in self.convs:
+            h = self.act(conv(h))
+        h = h.mean(dim=-1)  # global average pool -> (B, hidden)
+        out = self.mlp(torch.cat([h, temb], dim=-1))  # (B, 2)
+        return out[:, 0], out[:, 1]  # logW_hat (B,), pi_logit (B,)
+
+
+class DiffusionStepMLP(nn.Module):
+    """Build the per-block diffusion-step vector from ``t`` (and optionally ``logW``).
+
+    W-aware generalization of a plain sinusoidal-time MLP: the only place the
+    inferred/true noise state enters the denoiser.
+    """
+
+    def __init__(self, temb_dim: int, hidden: int, w_conditioning: str) -> None:
+        super().__init__()
+        self.temb_dim = temb_dim
+        self.w_conditioning = w_conditioning
+        cond_in = temb_dim if w_conditioning == "none" else 2 * temb_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(cond_in, hidden), nn.SiLU(), nn.Linear(hidden, hidden)
+        )
+
+    def forward(
+        self, t: torch.Tensor, logW_hat: torch.Tensor, logW_oracle: torch.Tensor | None
+    ) -> torch.Tensor:
+        temb = sinusoidal_embedding(t, self.temb_dim)
+        if self.w_conditioning == "none":
+            return self.mlp(temb)
+        if self.w_conditioning == "oracle":
+            logw = logW_hat.detach() if logW_oracle is None else logW_oracle
+        else:  # inferred
+            logw = logW_hat.detach()
+        wemb = sinusoidal_embedding(logw, self.temb_dim)
+        return self.mlp(torch.cat([temb, wemb], dim=-1))
+
+
+class LevelAttention(nn.Module):
+    """Self-attention across the ``F`` book levels, applied per (batch, timestep).
+
+    Input/output ``(B, C, T, F)``; the ``F`` positions are the attention tokens, so
+    every level can attend to every other level (cross-level mixing).
+    """
+
+    def __init__(self, channels: int, heads: int, dropout: float = 0.0) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(channels)
+        self.attn = nn.MultiheadAttention(
+            channels, heads, dropout=dropout, batch_first=True
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, t, f = x.shape
+        h = x.permute(0, 2, 3, 1).reshape(b * t, f, c)  # (B*T, F, C) tokens = levels
+        hn = self.norm(h)
+        a, _ = self.attn(hn, hn, hn, need_weights=False)
+        h = h + a
+        return h.reshape(b, t, f, c).permute(0, 3, 1, 2)  # (B, C, T, F)

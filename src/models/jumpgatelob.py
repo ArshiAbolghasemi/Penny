@@ -1,10 +1,10 @@
 """JumpGateLOB: a Lévy, W-aware joint diffusion-classifier with ONE temporal-attention
 layer, built for feature-only LOB trend inference.
 
-Deliberately leaner than :class:`~models.jumpgatescore.JumpGateScoreGrad`: instead of
-a deep stack of jointly-coupled residual blocks, the *global* timestep coupling is a
-**single** temporal self-attention layer over ``T`` on top of a **local** recurrent
-(or conv) encoder — the rest of the capacity goes into a small grid diffusion head.
+Instead of a deep stack of jointly-coupled residual blocks, the *global* timestep
+coupling is a **single** temporal self-attention layer over ``T`` on top of a
+**local** recurrent (or conv) encoder — the rest of the capacity goes into a small
+grid diffusion head.
 
 Shared trunk (used by both losses; run once per pass):
 
@@ -41,11 +41,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.jumpgatescore import DiffusionStepMLP, LevelAttention
-from models.jumpgateunet import NoiseStateEstimator
 from models.modules import (
     AttentionPool,
     BiN,
+    DiffusionStepMLP,
+    LevelAttention,
+    NoiseStateEstimator,
     count_parameters as count_parameters,  # re-export
     sinusoidal_embedding,
 )
