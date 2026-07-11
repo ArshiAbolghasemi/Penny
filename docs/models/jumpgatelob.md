@@ -76,6 +76,7 @@ Joint, with **separate passes**; all three terms are always active:
 L_cls    = CE(classify(x₀), label)                       # clean pass, t = 0
 L_score  = w̄_t · ‖ ŝ(x_t, t) − ∇log q(x_t|x₀) ‖²         # generalized score matching
 L_robust = CE(classify(x̃), label)                        # jump-noised low-t pass
+         + robust_kl · KL( p(x̃) ‖ p(x₀).detach() )       # clean/noisy consistency
 L        = L_cls + λ_diff·L_score + μ_robust·L_robust
 ```
 
@@ -84,7 +85,8 @@ L        = L_cls + λ_diff·L_score + μ_robust·L_robust
 - **`L_robust`** is the piece that makes the *inference path* robust: `x̃` is the same
   jump-diffusion forward applied at a **low `t`** (the SNR ≥ 1 region, so the label is
   still recoverable), classified at the head's `t = 0` conditioning — deployment never
-  knows the noise level.
+  knows the noise level. CE keeps the noisy prediction correct; the KL term pulls it
+  toward the model's own clean prediction.
 
 Model selection / early stopping on **trend-head macro-F1** (feature-only). Each epoch
 also logs `noisy_val_f1` — macro-F1 on jump-noised validation windows — the robustness
@@ -112,7 +114,7 @@ Trunk: `jgl_local` (`gru`/`conv`), `jgl_gru_hidden`, `jgl_gru_layers`,
 `cls_dropout`.
 Forward / losses: `diffusion_process` (`levy`/`gaussian`), `schedule`, `T_max`,
 `levy_jump_rate`, `levy_gamma_shape`, `levy_gamma_scale`, `levy_table_num_r`,
-`levy_table_mc`, `lambda_diff`, `mu_robust`, `label_smoothing`.
+`levy_table_mc`, `lambda_diff`, `mu_robust`, `robust_kl`, `label_smoothing`.
 
 ## Run
 

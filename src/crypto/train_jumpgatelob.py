@@ -6,6 +6,7 @@ is noisy and contains jumps.  Three terms, all always active:
     L_cls    = CE(classify(x0), label)                       # clean pass, t = 0
     L_score  = w̄_t · || ŝ(x_t, t) − ∇log q(x_t|x0) ||²       # generalized score matching
     L_robust = CE(classify(x̃), label)                        # jump-noised low-t pass
+             + robust_kl · KL( p(x̃) ‖ p(x0).detach() )       # clean/noisy consistency
     L        = L_cls + lambda_diff · L_score + mu_robust · L_robust
 
 * **Forward process** — the Lévy jump-diffusion of ``src/levy``: additive noise
@@ -18,8 +19,9 @@ is noisy and contains jumps.  Three terms, all always active:
 * **L_robust** — the trend head classifies **jump-noised** windows drawn from the same
   forward process at low ``t`` (the SNR ≥ 1 region, so the label is still recoverable),
   always at the classifier's ``t = 0`` conditioning (deployment never knows the noise
-  level) — this trains the *inference path itself* to stay correct under noise and
-  jumps.
+  level).  CE keeps it correct under noise; the KL term pulls the noisy prediction
+  toward its own clean prediction — this trains the *inference path itself* to be
+  robust to noise and jumps.
 
 Model selection / early stopping on **trend-head macro-F1** (feature-only); train and
 val F1 are both logged so the noise-fitting gap is visible.
@@ -120,6 +122,7 @@ def _train_epoch(
     grad_clip = config.get("grad_clip", 1.0)
     lam_diff = config.get("lambda_diff", 1.0)
     mu_robust = config.get("mu_robust", 0.5)
+    robust_kl = config.get("robust_kl", 1.0)
     label_smoothing = config.get("label_smoothing", 0.0)
     t_max = fp.schedule.num_timesteps
 
@@ -150,9 +153,13 @@ def _train_epoch(
             t_rob = low_t[torch.randint(0, len(low_t), (b,), device=device)]
             x_rob, _ = fp.add_noise(x0, t_rob)
             logits_rob = model.classify(x_rob)
-            rob_loss = F.cross_entropy(
-                logits_rob, label, label_smoothing=label_smoothing
+            rob_ce = F.cross_entropy(logits_rob, label, label_smoothing=label_smoothing)
+            rob_con = F.kl_div(
+                F.log_softmax(logits_rob, dim=1),
+                F.softmax(logits.detach(), dim=1),
+                reduction="batchmean",
             )
+            rob_loss = rob_ce + robust_kl * rob_con
 
             loss = loss + lam_diff * score_loss + mu_robust * rob_loss
 

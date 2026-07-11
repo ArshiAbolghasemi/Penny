@@ -49,5 +49,6 @@
   "jgl_feat_heads": 2,
   "jgl_pad_mode": "reflect",
   "use_bin": false,
-  "mu_robust": 0.5
+  "mu_robust": 0.5,
+  "robust_kl": 1.0
 }
