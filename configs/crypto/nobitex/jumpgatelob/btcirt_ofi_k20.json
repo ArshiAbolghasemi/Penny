@@ -33,15 +33,8 @@
   "levy_gamma_scale": 1.0,
   "levy_table_num_r": 512,
   "levy_table_mc": 20000,
-  "w_conditioning": "none",
-  "gated_experts": false,
-  "gate_grad": "detach",
-  "mu_W": 0.1,
-  "jg_gphi_hidden": 64,
   "cls_dropout": 0.2,
   "label_smoothing": 0.1,
-  "mu_jump": 0.05,
-  "jump_rv_k": 4.0,
   "lambda_diff": 1.0,
   "jgl_local": "gru",
   "jgl_gru_hidden": 64,
@@ -55,6 +48,6 @@
   "jgl_feat_mix": "conv",
   "jgl_feat_heads": 2,
   "jgl_pad_mode": "reflect",
-  "baranchuk_phase1_epochs": 40,
-  "use_bin": true
+  "use_bin": false,
+  "mu_robust": 0.5
 }

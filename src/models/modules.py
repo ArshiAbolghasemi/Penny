@@ -151,70 +151,7 @@ def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-# ── JumpGate shared blocks (used by JumpGateLOB) ────────────────────────────
-
-
-class NoiseStateEstimator(nn.Module):
-    """g_phi: infer ``(logW_hat, pi_logit)`` from the noised window and timestep.
-
-    Strided ``Conv1d`` stack over the time axis (features as channels) → global
-    average pool → MLP on the pooled vector concatenated with the timestep
-    embedding.  Outputs two scalars per sample.
-    """
-
-    def __init__(
-        self, n_features: int, temb_dim: int, hidden: int = 64, n_conv: int = 3
-    ) -> None:
-        super().__init__()
-        chs = [n_features] + [hidden] * n_conv
-        self.convs = nn.ModuleList(
-            nn.Conv1d(chs[i], chs[i + 1], kernel_size=3, stride=2, padding=1)
-            for i in range(n_conv)
-        )
-        self.act = nn.SiLU()
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden + temb_dim, hidden), nn.SiLU(), nn.Linear(hidden, 2)
-        )
-
-    def forward(
-        self, x_t: torch.Tensor, temb: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        h = x_t.squeeze(1).transpose(1, 2)  # (B, F, T)
-        for conv in self.convs:
-            h = self.act(conv(h))
-        h = h.mean(dim=-1)  # global average pool -> (B, hidden)
-        out = self.mlp(torch.cat([h, temb], dim=-1))  # (B, 2)
-        return out[:, 0], out[:, 1]  # logW_hat (B,), pi_logit (B,)
-
-
-class DiffusionStepMLP(nn.Module):
-    """Build the per-block diffusion-step vector from ``t`` (and optionally ``logW``).
-
-    W-aware generalization of a plain sinusoidal-time MLP: the only place the
-    inferred/true noise state enters the denoiser.
-    """
-
-    def __init__(self, temb_dim: int, hidden: int, w_conditioning: str) -> None:
-        super().__init__()
-        self.temb_dim = temb_dim
-        self.w_conditioning = w_conditioning
-        cond_in = temb_dim if w_conditioning == "none" else 2 * temb_dim
-        self.mlp = nn.Sequential(
-            nn.Linear(cond_in, hidden), nn.SiLU(), nn.Linear(hidden, hidden)
-        )
-
-    def forward(
-        self, t: torch.Tensor, logW_hat: torch.Tensor, logW_oracle: torch.Tensor | None
-    ) -> torch.Tensor:
-        temb = sinusoidal_embedding(t, self.temb_dim)
-        if self.w_conditioning == "none":
-            return self.mlp(temb)
-        if self.w_conditioning == "oracle":
-            logw = logW_hat.detach() if logW_oracle is None else logW_oracle
-        else:  # inferred
-            logw = logW_hat.detach()
-        wemb = sinusoidal_embedding(logw, self.temb_dim)
-        return self.mlp(torch.cat([temb, wemb], dim=-1))
+# ── Cross-level attention (used by the joint diffusion models) ──────────────
 
 
 class LevelAttention(nn.Module):

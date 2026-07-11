@@ -1,36 +1,39 @@
-"""Train JumpGateLOB: Lévy W-aware joint diffusion-classifier, feature-only inference.
+"""Train JumpGateLOB: jump-diffusion score matching + noise-consistent classification.
 
-Joint objective on a **shared trunk**, with **separate passes** so the trend head is
-always trained on the same clean-window distribution it sees at inference:
+Joint objective on a shared trunk, with **separate passes**, built for LOB data that
+is noisy and contains jumps.  Three terms, all always active:
 
-    L_cls   = CE(classify(x0), label)                    # clean pass, t = 0
-    L_diff  = || eps_hat - eps ||^2                       # noised pass, sampled t
-    L_W     = MSE(logW_hat, log W) + BCE(pi_logit, jump_flag)   # trains g_phi
-    L_jump  = BCE(pi_logit, data_jump)   # self-supervised market-jump nudge
-    L       = L_cls + lambda_diff * L_diff + mu_W * L_W + mu_jump * L_jump
+    L_cls    = CE(classify(x0), label)                       # clean pass, t = 0
+    L_score  = w̄_t · || ŝ(x_t, t) − ∇log q(x_t|x0) ||²       # generalized score matching
+    L_robust = CE(classify(x̃), label)                        # jump-noised low-t pass
+    L        = L_cls + lambda_diff · L_score + mu_robust · L_robust
 
-``(x_t, eps, W, jump_flag)`` come from ``fp.add_noise_eps`` (Lévy jump-diffusion, or
-the Gaussian bypass).  ``g_phi`` outputs are detached everywhere except ``L_W`` /
-``L_jump`` (and the gate mixture when ``gate_grad="flow"``).
+* **Forward process** — the Lévy jump-diffusion of ``src/levy``: additive noise
+  ``u = √W·ξ`` with ``W = σ_t² + Σ_k S_k`` (Brownian variance + compound-Poisson gamma
+  jumps).  ``--process gaussian`` ablates the jumps away.
+* **L_score** — denoising score matching against the *tabulated generalized score* of
+  that non-Gaussian kernel, ``∇log q = −u·h(|u|)`` (Baule 2025), weighted per sample by
+  ``w̄_t = E[W_t]`` so the target is O(1) at every timestep.  This is what shapes the
+  trunk on jump-diffusion perturbations.
+* **L_robust** — the trend head classifies **jump-noised** windows drawn from the same
+  forward process at low ``t`` (the SNR ≥ 1 region, so the label is still recoverable),
+  always at the classifier's ``t = 0`` conditioning (deployment never knows the noise
+  level) — this trains the *inference path itself* to stay correct under noise and
+  jumps.
+
+Model selection / early stopping on **trend-head macro-F1** (feature-only); train and
+val F1 are both logged so the noise-fitting gap is visible.
 
 Modes:
-  * default   — joint (both losses each step).
-  * --baseline — plain classifier: ``L_cls`` only, no diffusion / g_phi (ladder's
-    no-diffusion reference).
-  * --baranchuk — two-phase diagnostic (Baranchuk et al. 2022): phase 1 trains
-    diffusion only; phase 2 freezes the trunk and trains only the trend head on the
-    frozen features.  Tests how linearly-separable the diffusion features are.
-
-Model selection / early stopping on **trend-head macro-F1** (feature-only), not
-denoising MSE.  Train and val F1 are both logged so the **F1 gap** (noise-fitting)
-is visible.
+  * default    — joint (all three losses each step).
+  * --process gaussian — ablation: no jumps in the forward process.
+  * --baseline — plain classifier: ``L_cls`` only.
 
 Usage::
 
     uv run python -m crypto.train_jumpgatelob configs/crypto/nobitex/jumpgatelob/btcirt_ofi_k10.json
-    uv run python -m crypto.train_jumpgatelob ... --process gaussian   # ablation
-    uv run python -m crypto.train_jumpgatelob ... --baseline           # plain-classifier
-    uv run python -m crypto.train_jumpgatelob ... --baranchuk          # two-phase diagnostic
+    uv run python -m crypto.train_jumpgatelob ... --process gaussian
+    uv run python -m crypto.train_jumpgatelob ... --baseline
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 import torch
 import torch.nn.functional as F
 from loguru import logger
-from sklearn.metrics import classification_report, f1_score, roc_auc_score
+from sklearn.metrics import classification_report, f1_score
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
@@ -68,8 +71,8 @@ from utils.training import (
 
 
 def _diffusion_cfg(config: dict) -> DiffusionConfig:
-    """Map the flat repo config onto the levy DiffusionConfig (eps-prediction, so the
-    generalized-score table is bypassed with ``table_num_r=1``)."""
+    """Map the flat repo config onto the levy DiffusionConfig (score-matching path, so
+    the generalized-score table is built for real)."""
     return DiffusionConfig(
         process=config.get("diffusion_process", "levy"),
         schedule=config.get("schedule", "vp"),
@@ -81,63 +84,77 @@ def _diffusion_cfg(config: dict) -> DiffusionConfig:
         jump_rate=config.get("levy_jump_rate", 1.0),
         jump_gamma_shape=config.get("levy_gamma_shape", 1.0),
         jump_gamma_scale=config.get("levy_gamma_scale", 1.0),
-        table_num_r=1,
-        table_mc_samples=1,
+        table_num_r=config.get("levy_table_num_r", 512),
+        table_mc_samples=config.get("levy_table_mc", 20000),
         table_seed=config.get("seed", 42),
     )
 
 
-def _data_jump_flag(x0: torch.Tensor, k: float) -> torch.Tensor:
-    """Self-supervised market-jump target: level-averaged increment > ``k`` realized-
-    vol units (distinct from the forward-process ``jump_flag``)."""
-    agg = x0.squeeze(1).mean(dim=-1)  # (B, T)
-    dif = agg[:, 1:] - agg[:, :-1]
-    rv = dif.std(dim=1).clamp_min(1e-8)
-    return (dif.abs().max(dim=1).values > k * rv).float()
+def _mean_W(fp: ForwardProcess, t: torch.Tensor) -> torch.Tensor:
+    """Analytic mean total variance ``E[W_t] = σ_t² + Λ_t·shape·scale``.
+
+    Per-sample DSM weight so the weighted score target is O(1) at every timestep
+    (raw score magnitude is ~1/W)."""
+    _, sigma_t = fp.schedule.gather(t)
+    w = sigma_t**2
+    if fp.process == "levy":
+        w = w + fp.lambda_t.to(t.device)[t] * fp.jump.mean_jump_var()
+    return w
+
+
+def _low_t_indices(fp: ForwardProcess, device: torch.device) -> torch.Tensor:
+    """Timesteps where signal dominates noise (SNR ≥ 1) — the noise levels the robust
+    classification pass draws from.  VP: ᾱ_t ≥ 0.5; VE: σ_t < 1 (features z-scored)."""
+    if fp.schedule.kind == "vp":
+        mask = (fp.schedule.a.to(device) ** 2) >= 0.5
+    else:
+        mask = fp.schedule.sigma.to(device) < 1.0
+    idx = torch.nonzero(mask, as_tuple=False).flatten()
+    return idx if len(idx) > 0 else torch.zeros(1, dtype=torch.long, device=device)
 
 
 def _train_epoch(
-    model, fp, loader, optimizer, lr_sched, config, device, oracle, do_cls, do_diff
+    model, fp, low_t, loader, optimizer, lr_sched, config, device, do_diff
 ):
     model.train()
     grad_clip = config.get("grad_clip", 1.0)
     lam_diff = config.get("lambda_diff", 1.0)
-    mu_W = config.get("mu_W", 0.1)
-    mu_jump = config.get("mu_jump", 0.05)
-    jump_rv_k = config.get("jump_rv_k", 4.0)
+    mu_robust = config.get("mu_robust", 0.5)
     label_smoothing = config.get("label_smoothing", 0.0)
     t_max = fp.schedule.num_timesteps
 
-    tot = clsm = difm = lwm = 0.0
+    tot = clsm = scm = robm = 0.0
     n = 0
     for batch in loader:
         x0 = batch["x"].to(device).float()  # (B, 1, T, F)
         label = batch["label"].to(device)
         b = x0.shape[0]
 
-        loss = x0.new_zeros(())
-        cls_loss = diff_loss = L_W = x0.new_zeros(())
-
-        if do_cls:
-            logits = model.classify(x0)  # clean pass, t = 0
-            cls_loss = F.cross_entropy(logits, label, label_smoothing=label_smoothing)
-            loss = loss + cls_loss
+        # clean pass — trend head sees exactly what inference sees
+        logits = model.classify(x0)
+        cls_loss = F.cross_entropy(logits, label, label_smoothing=label_smoothing)
+        loss = cls_loss
+        score_loss = rob_loss = x0.new_zeros(())
 
         if do_diff:
+            # generalized score matching on the jump-diffusion kernel
             t = torch.randint(0, t_max, (b,), device=device)
-            x_t, eps, W, jump_flag = fp.add_noise_eps(x0, t)
-            logW = torch.log(W.clamp_min(1e-12))
-            eps_hat, logW_hat, pi_logit = model.diffuse(
-                x_t, t, logW_oracle=logW if oracle else None
+            x_t, _ = fp.add_noise(x0, t)
+            s_target = fp.score_target(x_t, x0, t)
+            s_hat = model.score(x_t, t)
+            w = _mean_W(fp, t)
+            score_loss = (w * ((s_hat - s_target) ** 2).flatten(1).mean(1)).mean()
+
+            # noise-consistent classification: jump-noised low-t windows, classified
+            # at t=0 conditioning (deployment never knows the noise level)
+            t_rob = low_t[torch.randint(0, len(low_t), (b,), device=device)]
+            x_rob, _ = fp.add_noise(x0, t_rob)
+            logits_rob = model.classify(x_rob)
+            rob_loss = F.cross_entropy(
+                logits_rob, label, label_smoothing=label_smoothing
             )
-            diff_loss = F.mse_loss(eps_hat, eps)
-            L_W = F.mse_loss(logW_hat, logW) + F.binary_cross_entropy_with_logits(
-                pi_logit, jump_flag
-            )
-            L_jump = F.binary_cross_entropy_with_logits(
-                pi_logit, _data_jump_flag(x0, jump_rv_k)
-            )
-            loss = loss + lam_diff * diff_loss + mu_W * L_W + mu_jump * L_jump
+
+            loss = loss + lam_diff * score_loss + mu_robust * rob_loss
 
         optimizer.zero_grad()
         loss.backward()
@@ -149,11 +166,11 @@ def _train_epoch(
 
         tot += loss.item()
         clsm += cls_loss.item()
-        difm += diff_loss.item()
-        lwm += L_W.item()
+        scm += score_loss.item()
+        robm += rob_loss.item()
         n += 1
     n = max(n, 1)
-    return {"total": tot / n, "cls": clsm / n, "diff": difm / n, "L_W": lwm / n}
+    return {"total": tot / n, "cls": clsm / n, "score": scm / n, "robust": robm / n}
 
 
 @torch.no_grad()
@@ -179,36 +196,23 @@ def _f1_ce_acc(model, loader, device, max_batches=None):
 
 
 @torch.no_grad()
-def _validate_noise_state(model, fp, loader, config, device) -> dict:
-    """logW RMSE + jump AUROC on the noised forward pass."""
+def _noisy_f1(model, fp, low_t, loader, device, max_batches=None):
+    """Macro-F1 on jump-noised low-t windows — the robustness metric the noise-
+    consistency loss is trying to move."""
     model.eval()
-    t_max = fp.schedule.num_timesteps
-    oracle = config.get("w_conditioning", "none") == "oracle"
-    logw_t, logw_hat, flags, pis = [], [], [], []
-    for batch in loader:
+    y_true, y_pred = [], []
+    for i, batch in enumerate(loader):
+        if max_batches is not None and i >= max_batches:
+            break
         x0 = batch["x"].to(device).float()
-        b = x0.shape[0]
-        t = torch.randint(0, t_max, (b,), device=device)
-        x_t, _, W, jump_flag = fp.add_noise_eps(x0, t)
-        logW = torch.log(W.clamp_min(1e-12))
-        _, logW_hat, pi_logit = model.diffuse(
-            x_t, t, logW_oracle=logW if oracle else None
-        )
-        logw_t.append(logW.cpu())
-        logw_hat.append(logW_hat.cpu())
-        flags.append(jump_flag.cpu())
-        pis.append(torch.sigmoid(pi_logit).cpu())
-    logw_t = torch.cat(logw_t)
-    logw_hat = torch.cat(logw_hat)
-    flags = torch.cat(flags).numpy()
-    pis = torch.cat(pis).numpy()
-    rmse = float(torch.sqrt(torch.mean((logw_hat - logw_t) ** 2)))
-    auroc = (
-        float(roc_auc_score(flags, pis))
-        if flags.min() == 0 and flags.max() == 1
-        else float("nan")
+        t_rob = low_t[torch.randint(0, len(low_t), (x0.shape[0],), device=device)]
+        x_rob, _ = fp.add_noise(x0, t_rob)
+        logits = model.classify(x_rob)
+        y_true.extend(batch["label"].tolist())
+        y_pred.extend(logits.argmax(1).cpu().tolist())
+    return float(
+        f1_score(y_true, y_pred, average="macro", labels=[0, 1, 2], zero_division=0)
     )
-    return {"logW_rmse": rmse, "jump_auroc": auroc}
 
 
 @torch.no_grad()
@@ -239,15 +243,6 @@ def _per_class_report(model, dataset, config, device) -> dict:
     )
 
 
-def _new_optim_sched(model, config, total_steps):
-    opt = AdamW(
-        (p for p in model.parameters() if p.requires_grad),
-        lr=config["lr"],
-        weight_decay=config["weight_decay"],
-    )
-    return opt, build_cosine_schedule(opt, config, total_steps)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -259,17 +254,9 @@ def main() -> None:
     parser.add_argument(
         "--baseline",
         action="store_true",
-        help="plain classifier: L_cls only, no diffusion / g_phi",
-    )
-    parser.add_argument(
-        "--baranchuk",
-        action="store_true",
-        help="two-phase diagnostic: diffusion-only, then frozen-trunk head training",
+        help="plain classifier: L_cls only, no diffusion / robustness losses",
     )
     args = parser.parse_args()
-    if args.baseline and args.baranchuk:
-        logger.error("--baseline and --baranchuk are mutually exclusive")
-        sys.exit(1)
 
     config_path = Path(args.config)
     if not config_path.exists():
@@ -286,7 +273,7 @@ def main() -> None:
 
     device = resolve_device(config["device"])
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    mode = "baseline" if args.baseline else ("baranchuk" if args.baranchuk else process)
+    mode = "baseline" if args.baseline else process
     ckpt_dir = (
         Path(config["checkpoint_dir"])
         / f"jumpgatelob_{mode}_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
@@ -299,12 +286,10 @@ def main() -> None:
     cb = meta["class_balance"]
 
     logger.info(
-        "JumpGateLOB  symbol={} mode={} process={} w_cond={} gated={}",
+        "JumpGateLOB  symbol={} mode={} process={} (score-matching + noise-consistency)",
         config["symbol"],
         mode,
         process,
-        config.get("w_conditioning", "none"),
-        config.get("gated_experts", False),
     )
     logger.info("  windows train={} val={} test={}", *meta["counts"].values())
     logger.info(
@@ -318,10 +303,13 @@ def main() -> None:
     model = JumpGateLOB(config).to(device)
     d = config["T_past"] * config["n_features"]
     fp = ForwardProcess(_diffusion_cfg(config), d=d, device=device)
+    low_t = _low_t_indices(fp, device)
     logger.info(
-        "  params={:.2f}M  gflops/sample={:.3f}  device={}",
+        "  params={:.2f}M  gflops/sample={:.3f}  low-t region: {} steps (≤ t={})  device={}",
         count_parameters(model) / 1e6,
         log_gflops(model, train_ds, device),
+        len(low_t),
+        int(low_t.max()),
         device,
     )
 
@@ -336,81 +324,51 @@ def main() -> None:
         generator=generator,
     )
     val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
-    # capped train-F1 pass (same #batches as val) to watch the noise-fitting gap
     train_eval_batches = max(1, len(val_loader))
 
     epochs = config["epochs"]
-    oracle = config.get("w_conditioning", "none") == "oracle"
-    p1 = config.get("baranchuk_phase1_epochs", epochs // 2)
-    optimizer, lr_sched = _new_optim_sched(model, config, epochs * len(train_loader))
+    do_diff = not args.baseline
+    optimizer = AdamW(
+        (p for p in model.parameters() if p.requires_grad),
+        lr=config["lr"],
+        weight_decay=config["weight_decay"],
+    )
+    lr_sched = build_cosine_schedule(optimizer, config, epochs * len(train_loader))
 
     best, patience, history = float("-inf"), 0, []
     for epoch in range(epochs):
-        # decide per-epoch losses & (Baranchuk) trunk freeze
-        if args.baseline:
-            do_cls, do_diff, phase = True, False, "baseline"
-        elif args.baranchuk:
-            if epoch < p1:
-                do_cls, do_diff, phase = False, True, "diff"
-            else:
-                do_cls, do_diff, phase = True, False, "head"
-                if epoch == p1:  # freeze the trunk, fresh optimizer on the head only
-                    for p in model.trunk_parameters():
-                        p.requires_grad_(False)
-                    optimizer, lr_sched = _new_optim_sched(
-                        model, config, (epochs - p1) * len(train_loader)
-                    )
-                    best, patience = float("-inf"), 0  # phase-2 selection is fresh
-        else:
-            do_cls, do_diff, phase = True, True, "joint"
-
         tr = _train_epoch(
-            model,
-            fp,
-            train_loader,
-            optimizer,
-            lr_sched,
-            config,
-            device,
-            oracle,
-            do_cls,
-            do_diff,
+            model, fp, low_t, train_loader, optimizer, lr_sched, config, device, do_diff
         )
         val_f1, val_ce, val_acc = _f1_ce_acc(model, val_loader, device)
         train_f1, _, _ = _f1_ce_acc(model, train_loader, device, train_eval_batches)
+        noisy_f1 = _noisy_f1(model, fp, low_t, val_loader, device)
         row = {
             "epoch": epoch,
-            "phase": phase,
             **tr,
             "val_f1": val_f1,
             "val_ce": val_ce,
             "val_acc": val_acc,
             "train_f1": train_f1,
             "f1_gap": train_f1 - val_f1,
+            "noisy_val_f1": noisy_f1,
         }
-        if do_diff:
-            row.update(_validate_noise_state(model, fp, val_loader, config, device))
         logger.info(
-            "ep {} [{}] | cls={:.4f} diff={:.4f} L_W={:.4f}"
-            " | val_f1={:.4f} acc={:.4f} | train_f1={:.4f} gap={:+.4f}{}",
+            "ep {} | cls={:.4f} score={:.4f} robust={:.4f}"
+            " | val_f1={:.4f} acc={:.4f} noisy_f1={:.4f} | train_f1={:.4f} gap={:+.4f}",
             epoch,
-            phase,
             tr["cls"],
-            tr["diff"],
-            tr["L_W"],
+            tr["score"],
+            tr["robust"],
             val_f1,
             val_acc,
+            noisy_f1,
             train_f1,
             train_f1 - val_f1,
-            f" | logW_rmse={row['logW_rmse']:.3f} auroc={row['jump_auroc']:.3f}"
-            if do_diff
-            else "",
         )
         history.append(row)
 
-        # only select on F1 when the trend head is being trained (skip diff-only phase)
-        selectable = do_cls
-        if selectable and val_f1 > best:
+        if val_f1 > best:
             best, patience = val_f1, 0
             torch.save(
                 {
@@ -421,7 +379,7 @@ def main() -> None:
                 },
                 ckpt_dir / "best.pt",
             )
-        elif selectable:
+        else:
             patience += 1
             if patience >= config["patience"]:
                 logger.info("early stopping at epoch {}", epoch)
@@ -434,17 +392,7 @@ def main() -> None:
     metrics = run_test(model, test_ds, config, device)
     report = _per_class_report(model, test_ds, config, device)
     (ckpt_dir / "metrics.json").write_text(
-        json.dumps(
-            {
-                "accuracy": metrics["accuracy"],
-                "macro_f1": metrics["macro_f1"],
-                "confusion": metrics["confusion"].tolist(),
-                "per_class": report,
-                "process": process,
-                "mode": mode,
-            },
-            indent=2,
-        )
+        json.dumps({"test": metrics, "per_class": report}, indent=2, default=str)
     )
 
 

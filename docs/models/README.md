@@ -53,17 +53,19 @@ Each run writes `best.pt`, `config.json` and `training_log.json` to a timestampe
 | Model | One-liner | Doc |
 |-------|-----------|-----|
 | **JointDiT** | Diffusion Transformer trained to jointly denoise + classify; ships with five training objectives (DDPM, consistency, t-EDM, drift, Lévy) plus a two-phase probe variant | [jointdit.md](jointdit.md) |
-| **JumpGateLOB** | Lévy, jump-aware joint diffusion-classifier built for feature-only trend inference | [jumpgatelob.md](jumpgatelob.md) |
+| **JumpGateLOB** | Jump-diffusion score matching + noise-consistent classification — simple GRU+attention trunk trained to stay accurate on noisy / jump-bearing windows | [jumpgatelob.md](jumpgatelob.md) |
+| **AlphaStableLOB** | JumpGateLOB's GRU+attention trunk with a genuine **α-stable** (Lévy-stable, power-law-tailed) forward process, trained by generalized score matching | [alphastablelob.md](alphastablelob.md) |
 
 ## Shared building blocks
 
 `models/modules.py` centralises pieces reused across families: `BiN` (bilinear
 normalisation), `AttentionPool`, sinusoidal timestep embeddings, U-Net conv blocks,
-and the JumpGate `NoiseStateEstimator` / `DiffusionStepMLP` / `LevelAttention`.
+and the cross-level `LevelAttention` used by the joint diffusion models.
 
 The diffusion machinery behind the joint models:
 
 - `models/ddpm.py` — minimal linear-β DDPM scheduler.
+- `models/alphastable.py` — α-stable (Lévy-stable) forward process + tabulated generalized score.
 - `models/consistency.py` — EDM/Karras preconditioning + Consistency-Training helpers.
 - `models/drift.py` — one-step "Generative Modeling via Drifting" loss + memory bank.
 - `models/probe.py` — backbone-agnostic two-phase (generative → frozen-trunk probe) machinery.

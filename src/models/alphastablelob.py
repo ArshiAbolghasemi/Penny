@@ -1,31 +1,36 @@
-"""JumpGateLOB: jump-diffusion score-matching joint classifier for noisy LOB windows.
+"""AlphaStableLOB: α-stable joint diffusion-classifier for feature-only LOB trend.
 
-A deliberately **simple** joint diffusion-classifier (same shape as
-:class:`~models.alphastablelob.AlphaStableLOB`): a shared trunk — optional ``BiN`` →
-(bi)GRU local encoder → **one** DiT-style temporal self-attention layer — feeding a
-**trend head** (the only path used at inference) and a single-channel **score head**
-(a training-time auxiliary).  No noise-state estimator, no gated experts, no
-``w_conditioning`` — the earlier gated variant of this architecture is preserved in
-git history.
+Shares the *trunk idea* of :class:`~models.jumpgatelob.JumpGateLOB` — a local
+recurrent encoder followed by a **single** temporal self-attention layer, feeding a
+trend head (kept at inference) and a grid diffusion head (a training-time auxiliary)
+— but the generative branch uses a genuine **α-stable (Lévy-stable)** forward process
+(:mod:`models.alphastable`): heavy, power-law-tailed noise (infinite variance for
+``α < 2``) that matches the fat tails of high-frequency LOB returns.
 
-What makes it the *jump-diffusion* model is the training procedure
-(``crypto.train_jumpgatelob``), built for LOB windows that are **noisy and contain
-jumps**:
+Because the α-stable score has no closed form, the diffusion head is trained by
+**generalized denoising score matching** against the tabulated isotropic score
+``-u·h(|u|)`` of the subordinated-Gaussian representation (see
+:mod:`models.alphastable`).  The head therefore predicts the **score** (one channel),
+not ``(ε, v)``.
 
-  1. **Jump-diffusion forward process** (``src/levy``): the additive noise is
-     ``u = √W·ξ`` with ``W = σ_t² + Σ_k S_k`` — Brownian variance plus
-     compound-Poisson gamma jumps — so the trunk is trained on perturbations that
-     look like market microstructure noise *and* discrete jumps.
-  2. **Generalized denoising score matching** (Baule 2025): the score head regresses
-     the *true* score of that non-Gaussian kernel, ``∇log q(x_t|x₀) = −u·h(|u|)``
-     with ``h`` a precomputed 1-D table — not ε-prediction, not a Gaussian score.
-  3. **Noise-consistent classification**: the trend head is additionally trained on
-     jump-noised low-``t`` windows (CE + KL-consistency to its own clean prediction),
-     so the *inference path itself* is robust to noise and jumps — the denoising
-     auxiliary alone only regularises the trunk.
+Trunk (run once per pass):
+
+  1. optional ``BiN`` front-end (per-window bilinear normalisation),
+  2. **local encoder** — a (bi)GRU (or temporal-conv) → per-timestep context
+     ``H₀ (B, T, D)``,
+  3. **one** DiT-style **temporal self-attention** layer over ``T`` with sinusoidal
+     positions, adaLN-Zero conditioned on the timestep embedding ``c``.
+
+Two heads share the trunk context ``H``:
+
+  * **trend head** — attention-pool over ``T`` → 3 logits.  Feature-only inference
+    runs only the trunk + this head on the clean window (no reverse sampling).
+  * **diffusion head** — a flat, constant-``(T,F)`` grid net predicting the α-stable
+    **score** ``ŝ (B, 1, T, F)``, adaLN-Zero conditioned on the timestep and injected
+    with the trunk context.
 
 Inference contract matches every other crypto model: ``predict(batch, device) →
-logits (B, 3)`` from a single clean-window pass (no sampling loop).
+logits (B, 3)``.  The heavy-tailed diffusion is a training-time regulariser only.
 """
 
 from __future__ import annotations
@@ -122,8 +127,8 @@ class DiffBlock(nn.Module):
         return x + gate.view(v) * h
 
 
-class ScoreHead(nn.Module):
-    """Flat grid net predicting the jump-diffusion score ``ŝ (B, 1, T, F)``."""
+class DiffHead(nn.Module):
+    """Flat grid net predicting the α-stable score ``ŝ (B, 1, T, F)``."""
 
     def __init__(
         self,
@@ -145,41 +150,41 @@ class ScoreHead(nn.Module):
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
 
-    def forward(self, x_t, c, H):
-        x = self.input_projection(x_t)  # (B, C, T, F)
+    def forward(self, x_in, c, H):
+        x = self.input_projection(x_in)  # (B, C, T, F)
         for blk in self.blocks:
             x = blk(x, c, H)
-        return self.out(x)  # (B, 1, T, F)
+        return self.out(x)  # (B, 1, T, F) score
 
 
-class JumpGateLOB(nn.Module):
-    """(bi)GRU + one temporal-attention trunk; trend head + jump-diffusion score head."""
+class AlphaStableLOB(nn.Module):
+    """(bi)GRU + one temporal-attention trunk; trend head + α-stable score head."""
 
     family = "joint_diffusion"
 
     def __init__(self, config: dict) -> None:
         super().__init__()
         F_dim = config["n_features"]
-        temb_dim = config.get("jdl_time_emb", 128)
+        temb_dim = config.get("astable_time_emb", 128)
         self.temb_dim = temb_dim
         self.F = F_dim
 
-        # ---- adaptive input normalization (front-end) -----------------------
+        # ---- BiN front-end --------------------------------------------------
         self.bin = (
             BiN(config["T_past"], F_dim) if config.get("use_bin", False) else None
         )
 
-        # ---- local encoder ---------------------------------------------------
-        self.local = config.get("jgl_local", "gru")
-        hidden = config.get("jgl_gru_hidden", 64)
-        bidir = bool(config.get("jgl_bidirectional", True))
+        # ---- local encoder --------------------------------------------------
+        self.local = config.get("astable_local", "gru")
+        hidden = config.get("astable_gru_hidden", 64)
+        bidir = bool(config.get("astable_bidirectional", True))
         if self.local == "gru":
             self.gru = nn.GRU(
                 input_size=F_dim,
                 hidden_size=hidden,
-                num_layers=config.get("jgl_gru_layers", 2),
-                dropout=config.get("jgl_gru_dropout", 0.0)
-                if config.get("jgl_gru_layers", 2) > 1
+                num_layers=config.get("astable_gru_layers", 2),
+                dropout=config.get("astable_gru_dropout", 0.0)
+                if config.get("astable_gru_layers", 2) > 1
                 else 0.0,
                 batch_first=True,
                 bidirectional=bidir,
@@ -194,7 +199,7 @@ class JumpGateLOB(nn.Module):
                 nn.Conv1d(D, D, 3, padding=1, padding_mode="replicate"),
             )
         else:
-            raise ValueError(f"jgl_local must be gru|conv, got {self.local!r}")
+            raise ValueError(f"astable_local must be gru|conv, got {self.local!r}")
         self.D = D
 
         # ---- timestep conditioning c = MLP(emb(t)) --------------------------
@@ -205,25 +210,25 @@ class JumpGateLOB(nn.Module):
         # ---- one temporal-attention layer -----------------------------------
         self.temporal = TemporalAttnBlock(
             D,
-            heads=config.get("jgl_attn_heads", 4),
+            heads=config.get("astable_attn_heads", 4),
             cond_dim=temb_dim,
-            dropout=config.get("jgl_attn_dropout", 0.1),
+            dropout=config.get("astable_attn_dropout", 0.1),
         )
 
         # ---- trend head ------------------------------------------------------
-        self.pool = AttentionPool(D, heads=config.get("jdl_pool_heads", 4))
+        self.pool = AttentionPool(D, heads=config.get("astable_pool_heads", 4))
         self.cls_dropout = nn.Dropout(config.get("cls_dropout", 0.0))
         self.classifier = nn.Linear(D, 3)
 
-        # ---- score head ------------------------------------------------------
-        self.score_head = ScoreHead(
-            channels=config.get("jgl_diff_channels", 16),
+        # ---- diffusion (score) head -----------------------------------------
+        self.diff_head = DiffHead(
+            channels=config.get("astable_diff_channels", 16),
             cond_dim=temb_dim,
             ctx_dim=D,
-            n_blocks=config.get("jgl_diff_blocks", 2),
-            feat_mix=config.get("jgl_feat_mix", "conv"),
-            feat_heads=config.get("jgl_feat_heads", 2),
-            pad_mode=config.get("jgl_pad_mode", "reflect"),
+            n_blocks=config.get("astable_diff_blocks", 2),
+            feat_mix=config.get("astable_feat_mix", "conv"),
+            feat_heads=config.get("astable_feat_heads", 2),
+            pad_mode=config.get("astable_pad_mode", "reflect"),
         )
 
     # ---- trunk --------------------------------------------------------------
@@ -256,23 +261,21 @@ class JumpGateLOB(nn.Module):
 
     # ---- task-specific passes (training uses these separately) --------------
     def classify(self, x: torch.Tensor) -> torch.Tensor:
-        """Trend logits at ``t = 0`` — used for clean windows at inference *and* for
-        jump-noised windows in the noise-consistency loss (deployment never knows the
-        noise level, so the classifier never conditions on ``t``)."""
+        """Trend logits from the *clean* window at ``t = 0`` (matches inference)."""
         t = torch.zeros(x.shape[0], dtype=torch.long, device=x.device)
         H, _ = self.trunk(x, t)
         return self._trend_logits(H)
 
-    def score(self, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """Predict the jump-diffusion score on the noised window at timestep ``t``."""
-        H, c = self.trunk(x_t, t)
-        return self.score_head(x_t, c, H)
+    def score(self, x_in: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Predict the α-stable score from the (EDM-scaled) noised window at ``t``."""
+        H, c = self.trunk(x_in, t)
+        return self.diff_head(x_in, c, H)
 
-    def forward(self, x_t: torch.Tensor, t: torch.Tensor):
+    def forward(self, x_in: torch.Tensor, t: torch.Tensor):
         """Joint pass: ``(ŝ, logits)``."""
-        H, c = self.trunk(x_t, t)
+        H, c = self.trunk(x_in, t)
         logits = self._trend_logits(H)
-        s_hat = self.score_head(x_t, c, H)
+        s_hat = self.diff_head(x_in, c, H)
         return s_hat, logits
 
     def trunk_parameters(self):
