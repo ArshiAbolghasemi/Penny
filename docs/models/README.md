@@ -76,7 +76,8 @@ These are documented in context within [jointdit.md](jointdit.md) and
 
 ## Explainability
 
-CTABL, DLA, JointDiT, and JumpGateLOB each have a dedicated XAI method fitted
-to their architecture (native attention/gate readout), plus a shared
-Integrated Gradients / GradientSHAP baseline for cross-model comparison —
-see [../xai/README.md](../xai/README.md).
+CTABL, DLA, and JumpGateLOB each have a dedicated XAI method fitted to their
+architecture (native attention/gate readout), plus a shared Integrated
+Gradients / GradientSHAP baseline for cross-model comparison — see
+[../xai/README.md](../xai/README.md). JointDiT is intentionally excluded
+from the XAI layer (decision 2026-07-11).

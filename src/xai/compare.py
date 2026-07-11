@@ -8,17 +8,20 @@ per model, then computes agreement/divergence metrics across models on the
 for every model, so "model A attends here, model B attends there" is a fact
 about the models, not an artifact of explaining different inputs).
 
-Normalisation note: the four native methods live at different resolutions —
-DLA's alpha and JointDiT's rollout are full ``(T, F)`` maps; CTABL's
-time_importance and JumpGateLOB's pool_attention are ``(T,)`` only (CTABL has
-no per-feature axis because TABL's attention lives in the post-projection
-``d2`` channel space, not the input's ``F``; JumpGateLOB's pooling attention
-sits over GRU latent context, not raw features — see the native module
-docstrings). Comparing them fairly means either (a) broadcasting the
-time-only signals across ``F`` so every model has a ``(T, F)`` map, and/or
-(b) also comparing on the reduced ``(T,)`` axis alone, which is the axis all
-four *do* share. This module does both — ``to_comparable_map`` for the
-(T, F) case, ``time_profile`` for the axis every method can produce.
+Normalisation note: the three native methods live at different resolutions —
+DLA's alpha is a full ``(T, F)`` map; CTABL's time_importance and
+JumpGateLOB's pool_attention are ``(T,)`` only (CTABL has no per-feature axis
+because TABL's attention lives in the post-projection ``d2`` channel space,
+not the input's ``F``; JumpGateLOB's pooling attention sits over GRU latent
+context, not raw features — see the native module docstrings). Comparing
+them fairly means either (a) broadcasting the time-only signals across ``F``
+so every model has a ``(T, F)`` map, and/or (b) also comparing on the reduced
+``(T,)`` axis alone, which is the axis all three *do* share. This module does
+both — ``to_comparable_map`` for the (T, F) case, ``time_profile`` for the
+axis every method can produce.
+
+JointDiT is intentionally excluded from the XAI layer (decision 2026-07-11) —
+see docs/xai/README.md.
 """
 
 from __future__ import annotations
@@ -31,19 +34,16 @@ import torch
 from xai.attribution import Attribution
 from xai.native.ctabl_attention import TABLExplanation
 from xai.native.dla_attention import DLAExplanation
-from xai.native.jointdit_rollout import RolloutExplanation
 from xai.native.jumpgatelob_readout import JumpGateExplanation
 
-NativeExplanation = (
-    TABLExplanation | DLAExplanation | RolloutExplanation | JumpGateExplanation
-)
+NativeExplanation = TABLExplanation | DLAExplanation | JumpGateExplanation
 
 # Models whose native explanation has genuine per-feature resolution (a real
 # (T, F) map) vs. a (T,) time-only signal broadcast across F for display —
 # see the normalisation note above. Any per-feature ranking (e.g. "top
 # features") computed from a broadcast model's comparable map is a tie by
 # construction and should not be presented as a real ranking.
-HAS_FEATURE_RESOLUTION = {"dla": True, "jointdit": True, "ctabl": False, "jumpgatelob": False}
+HAS_FEATURE_RESOLUTION = {"dla": True, "ctabl": False, "jumpgatelob": False}
 
 
 def _normalize(m: torch.Tensor) -> torch.Tensor:
@@ -68,8 +68,6 @@ def time_profile(model_name: str, expl: NativeExplanation, sample_idx: int) -> t
         return expl.time_importance[sample_idx]
     if isinstance(expl, DLAExplanation):
         return expl.beta[sample_idx]
-    if isinstance(expl, RolloutExplanation):
-        return expl.scores[sample_idx].mean(dim=-1)  # (T, F) -> (T,)
     if isinstance(expl, JumpGateExplanation):
         return expl.pool_attention[sample_idx]
     raise TypeError(f"unrecognised native explanation type: {type(expl)}")
@@ -81,9 +79,9 @@ def to_comparable_map(
     """Return a normalised ``(T, F)`` map for any native explanation, for overlay plots.
 
     Time-only signals (CTABL, JumpGateLOB) are broadcast equally across
-    ``F`` — this makes the plot legible side-by-side with DLA/JointDiT's
-    genuine per-feature maps, but the broadcast axis carries no real
-    per-feature information and should be captioned as such.
+    ``F`` — this makes the plot legible side-by-side with DLA's genuine
+    per-feature maps, but the broadcast axis carries no real per-feature
+    information and should be captioned as such.
     """
     if isinstance(expl, TABLExplanation):
         t1 = expl.time_importance.shape[-1]
@@ -95,8 +93,6 @@ def to_comparable_map(
         return _normalize(prof.unsqueeze(-1).expand(T, F).clone())
     if isinstance(expl, DLAExplanation):
         return _normalize(expl.alpha[sample_idx])  # (T, F) already
-    if isinstance(expl, RolloutExplanation):
-        return _normalize(expl.scores[sample_idx])  # (T, F) already
     if isinstance(expl, JumpGateExplanation):
         prof = expl.pool_attention[sample_idx]  # (T,)
         return _normalize(prof.unsqueeze(-1).expand(T, F).clone())

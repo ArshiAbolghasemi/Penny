@@ -3,9 +3,10 @@
 Both methods are model-agnostic (they only need ``classifier_fn``'s
 ``(B,1,T,F) -> (B,3)`` signature from :mod:`xai.attribution`), so this is the
 one XAI track that produces directly comparable attributions across CTABL,
-DLA, JointDiT, and JumpGateLOB on identical windows — the common yardstick
-for Task 4's cross-model comparison, on top of which each model's native
-method (Task 3) is layered.
+DLA, and JumpGateLOB on identical windows — the common yardstick for Task 4's
+cross-model comparison, on top of which each model's native method (Task 3)
+is layered. JointDiT is intentionally excluded from the XAI layer (decision
+2026-07-11) — see docs/xai/README.md.
 
 Why these two, and why not plain KernelSHAP/LIME here: see the design
 discussion in conversation — LOB windows are heavily autocorrelated across

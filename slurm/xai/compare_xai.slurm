@@ -16,22 +16,23 @@ cd "$ROOT_DIR"
 # symbol + feature_mode + label_k (cross-model agreement/faithfulness
 # metrics only mean something when every model solves the same task on the
 # same inputs; scripts/compare_xai.py warns if configs mismatch):
-#   CTABL_CKPT, DLA_CKPT, JOINTDIT_CKPT, JUMPGATELOB_CKPT
+#   CTABL_CKPT, DLA_CKPT, JUMPGATELOB_CKPT
 #   OUT_DIR       output directory for comparison_summary.json + figures
 # Optional:
 #   N_PER_CLASS   default 6
 #
+# JointDiT is intentionally excluded from the XAI layer (decision
+# 2026-07-11) — see docs/xai/README.md.
+#
 # Example submission:
 #   CTABL_CKPT=checkpoints/nobitex/BTCIRT/ctabl_BTCIRT_lob_.../best.pt \
 #   DLA_CKPT=checkpoints/nobitex/BTCIRT/dla_BTCIRT_lob_.../best.pt \
-#   JOINTDIT_CKPT=checkpoints/nobitex/BTCIRT/jointdit_BTCIRT_lob_.../best.pt \
 #   JUMPGATELOB_CKPT=checkpoints/nobitex/BTCIRT/jumpgatelob_BTCIRT_lob_.../best.pt \
 #   OUT_DIR=results/xai/compare_btcirt_lob \
 #     sbatch slurm/xai/compare_xai.slurm
 
 : "${CTABL_CKPT:?set CTABL_CKPT}"
 : "${DLA_CKPT:?set DLA_CKPT}"
-: "${JOINTDIT_CKPT:?set JOINTDIT_CKPT}"
 : "${JUMPGATELOB_CKPT:?set JUMPGATELOB_CKPT}"
 : "${OUT_DIR:?set OUT_DIR}"
 N_PER_CLASS="${N_PER_CLASS:-6}"
@@ -64,7 +65,6 @@ uv sync --extra "$UV_EXTRA"
 uv run python scripts/compare_xai.py \
     --ctabl "$CTABL_CKPT" \
     --dla "$DLA_CKPT" \
-    --jointdit "$JOINTDIT_CKPT" \
     --jumpgatelob "$JUMPGATELOB_CKPT" \
     --n-per-class "$N_PER_CLASS" \
     --out "$OUT_DIR"

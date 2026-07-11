@@ -1,8 +1,8 @@
-"""Cross-model XAI comparison: run all four models on the same windows and compare.
+"""Cross-model XAI comparison: run all three XAI models on the same windows and compare.
 
 Ties together Task 2 (shared Integrated Gradients) and Task 3 (per-model
 native explanations) into the Task 4 deliverable: for a fixed symbol/config,
-load all four checkpoints, sample the *same* test windows once, explain every
+load all three checkpoints, sample the *same* test windows once, explain every
 model on those windows with both its native method and IG, then report:
 
   1. Pairwise agreement (cosine similarity on comparable maps, time-profile
@@ -15,12 +15,14 @@ Requires one trained checkpoint per model on the *same* symbol + feature_mode
 + label_k, since agreement metrics are only meaningful when every model is
 predicting the same 3-way task on the same inputs.
 
+JointDiT is intentionally excluded from the XAI layer (decision 2026-07-11) —
+see docs/xai/README.md.
+
 Usage::
 
     uv run python scripts/compare_xai.py \\
         --ctabl checkpoints/nobitex/BTCIRT/ctabl_.../best.pt \\
         --dla checkpoints/nobitex/BTCIRT/dla_.../best.pt \\
-        --jointdit checkpoints/nobitex/BTCIRT/jointdit_.../best.pt \\
         --jumpgatelob checkpoints/nobitex/BTCIRT/jumpgatelob_.../best.pt \\
         --n-per-class 6 --out results/xai/compare_btcirt_lob
 """
@@ -56,7 +58,7 @@ from xai.native import explain_native
 from xai.registry import load_checkpoint
 from xai.sampling import CLASS_NAMES, sample_by_class, stack_windows
 
-MODEL_NAMES = ["ctabl", "dla", "jointdit", "jumpgatelob"]
+MODEL_NAMES = ["ctabl", "dla", "jumpgatelob"]
 
 
 def main() -> None:
@@ -70,7 +72,7 @@ def main() -> None:
     active_names = [name for name in MODEL_NAMES if getattr(args, name) is not None]
     if len(active_names) < 2:
         raise SystemExit(
-            "need at least 2 of --ctabl/--dla/--jointdit/--jumpgatelob to compare"
+            "need at least 2 of --ctabl/--dla/--jumpgatelob to compare"
         )
     if len(active_names) < len(MODEL_NAMES):
         logger.warning(

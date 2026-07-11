@@ -19,17 +19,19 @@ import torch.nn as nn
 
 from models.ctabl import CTABL
 from models.dla import DLA
-from models.jointdit import JointDiT
 from models.jumpgatelob import JumpGateLOB
 
 # name -> (class, family). "family" mirrors each class's own `family` attribute
 # (classifier | joint_diffusion) and controls which XAI paths are valid later
 # (e.g. joint_diffusion models must be explained via their `t=0` clean-window
 # inference path, never the noised denoiser path).
+#
+# JointDiT is intentionally excluded from the XAI layer (decision 2026-07-11) —
+# it is not a registered XAI model even though models.jointdit.JointDiT and its
+# training scripts remain in the codebase.
 MODEL_REGISTRY: dict[str, Callable[[dict], nn.Module]] = {
     "ctabl": CTABL,
     "dla": DLA,
-    "jointdit": JointDiT,
     "jumpgatelob": JumpGateLOB,
 }
 

@@ -14,17 +14,20 @@ cd "$ROOT_DIR"
 
 # Required env vars (checkpoint paths are timestamped at train time, so they
 # can't be hardcoded the way training configs are):
-#   MODEL       one of ctabl | dla | jointdit | jumpgatelob
+#   MODEL       one of ctabl | dla | jumpgatelob
 #   CHECKPOINT  path to a best.pt or its containing checkpoint dir
 # Optional:
 #   N_PER_CLASS default 8
 #   OUT_DIR     defaults to <checkpoint_dir>/xai/gradient
 #
+# JointDiT is intentionally excluded from the XAI layer (decision
+# 2026-07-11) — see docs/xai/README.md.
+#
 # Example submission:
 #   MODEL=ctabl CHECKPOINT=checkpoints/nobitex/BTCIRT/ctabl_BTCIRT_lob_20260101_000000 \
 #     sbatch slurm/xai/explain_gradient.slurm
 
-: "${MODEL:?set MODEL=ctabl|dla|jointdit|jumpgatelob}"
+: "${MODEL:?set MODEL=ctabl|dla|jumpgatelob}"
 : "${CHECKPOINT:?set CHECKPOINT=path/to/best.pt or its dir}"
 N_PER_CLASS="${N_PER_CLASS:-8}"
 

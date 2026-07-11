@@ -7,8 +7,10 @@ faithful choice for its architecture:
 
   - ``ctabl_attention``      — CTABL's TABL soft-attention + mixing scalar.
   - ``dla_attention``        — DLA's dual-stage input (alpha) + temporal (beta) attention.
-  - ``jointdit_rollout``     — JointDiT's Attention Rollout across DiT blocks.
   - ``jumpgatelob_readout``  — JumpGateLOB's AttentionPool weights + Levy gate (pi, logW).
+
+JointDiT is intentionally excluded from the XAI layer (decision 2026-07-11) —
+see docs/xai/README.md.
 
 ``explain_native`` dispatches on the model name so Task 4's cross-model
 comparison can call one function regardless of which model it's explaining.
@@ -20,24 +22,20 @@ import torch
 
 from models.ctabl import CTABL
 from models.dla import DLA
-from models.jointdit import JointDiT
 from models.jumpgatelob import JumpGateLOB
 
 from .ctabl_attention import TABLExplanation, extract_tabl_attention
 from .dla_attention import DLAExplanation, extract_dla_attention
-from .jointdit_rollout import RolloutExplanation, extract_attention_rollout
 from .jumpgatelob_readout import JumpGateExplanation, extract_jumpgate_readout
 
-NativeExplanation = (
-    TABLExplanation | DLAExplanation | RolloutExplanation | JumpGateExplanation
-)
+NativeExplanation = TABLExplanation | DLAExplanation | JumpGateExplanation
 
 
 def explain_native(model_name: str, model: torch.nn.Module, x: torch.Tensor) -> NativeExplanation:
     """Dispatch to the right native-explanation function for ``model_name``.
 
     Args:
-        model_name: One of ``ctabl``, ``dla``, ``jointdit``, ``jumpgatelob``
+        model_name: One of ``ctabl``, ``dla``, ``jumpgatelob``
             (matches ``xai.registry.MODEL_REGISTRY`` keys).
         model:      The loaded model instance.
         x:          ``(B, 1, T, F)`` clean input windows.
@@ -48,9 +46,6 @@ def explain_native(model_name: str, model: torch.nn.Module, x: torch.Tensor) -> 
     if model_name == "dla":
         assert isinstance(model, DLA)
         return extract_dla_attention(model, x)
-    if model_name == "jointdit":
-        assert isinstance(model, JointDiT)
-        return extract_attention_rollout(model, x)
     if model_name == "jumpgatelob":
         assert isinstance(model, JumpGateLOB)
         return extract_jumpgate_readout(model, x)

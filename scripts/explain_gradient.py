@@ -42,7 +42,7 @@ from xai.visualize import plot_attribution
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, choices=["ctabl", "dla", "jointdit", "jumpgatelob"])
+    parser.add_argument("--model", required=True, choices=["ctabl", "dla", "jumpgatelob"])
     parser.add_argument("--checkpoint", required=True, help="path to best.pt or its containing dir")
     parser.add_argument("--n-per-class", type=int, default=8)
     parser.add_argument("--ig-steps", type=int, default=50)
