@@ -48,17 +48,6 @@ Each run writes `best.pt`, `config.json` and `training_log.json` to a timestampe
 | **DLA**      | Dual-Stage Temporal Attention (DA-RNN) | [dla.md](dla.md) |
 | **Axial-LOB**| Axial-attention over the LOB image | [axiallob.md](axiallob.md) |
 
-### Classical statistical baselines
-
-No learned weights — re-fit per evaluation point on trailing history, walk-forward and
-no-lookahead. Included as a floor for the neural models, not trained via
-`utils/training.py`.
-
-| Model | One-liner | Doc |
-|-------|-----------|-----|
-| **ARIMA** | Univariate time-series baseline on the mid price alone | [arima.md](arima.md) |
-| **VAR**   | Bivariate linear baseline on mid-price return + best-level OFI | [var.md](var.md) |
-
 ### Joint generative–discriminative
 
 | Model | One-liner | Doc |

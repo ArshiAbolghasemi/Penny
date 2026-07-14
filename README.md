@@ -87,10 +87,6 @@ uv run python -m crypto.train_jumpgatelob    configs/crypto/nobitex/jumpgatelob/
 
 # α-stable joint model (heavy, power-law-tailed Lévy noise + generalized score matching)
 uv run python -m crypto.train_alphastablelob configs/crypto/nobitex/alphastablelob/btcirt_ofi_k10.json
-
-# classical statistical baselines (no learned weights, walk-forward re-fit)
-uv run python -m crypto.train_arima configs/crypto/nobitex/arima/btcirt_ofi_k10.json
-uv run python -m crypto.train_var   configs/crypto/nobitex/var/btcirt_ofi_k10.json
 ```
 
 Each run builds/loads the feature cache, trains with early stopping, restores the best
@@ -132,8 +128,7 @@ Per-topic files:
   [BiN-CTABL](docs/models/binctabl.md) · [TLOB](docs/models/tlob.md) ·
   [DLA](docs/models/dla.md) · [Axial-LOB](docs/models/axiallob.md) ·
   [JointDiT](docs/models/jointdit.md) · [JumpGateLOB](docs/models/jumpgatelob.md) ·
-  [AlphaStableLOB](docs/models/alphastablelob.md) · [ARIMA](docs/models/arima.md) ·
-  [VAR](docs/models/var.md)
+  [AlphaStableLOB](docs/models/alphastablelob.md)
 
 ## Repository layout
 

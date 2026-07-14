@@ -16,7 +16,6 @@ dependencies = [
     "pyarrow>=16.0.0",
     "scikit-learn>=1.4.0",
     "scipy>=1.13.0",
-    "statsmodels>=0.14.0",
 ]
 
 [project.optional-dependencies]
