@@ -9,6 +9,9 @@ description = "LOB direction forecasting on crypto (Binance, Nobitex) and equity
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    # captum 0.9 requires torch>=2.3, which conflicts with the cu118 extra (torch 2.1.2);
+    # 0.8.x only needs torch>=1.10 and so works under every hardware extra.
+    "captum>=0.8.0,<0.9.0",
     "dvc[s3]>=3.56.0",
     "loguru>=0.7.3",
     "numpy>=1.26.0,<2.0.0",
