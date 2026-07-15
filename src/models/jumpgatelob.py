@@ -73,13 +73,22 @@ class TemporalAttnBlock(nn.Module):
         nn.init.zeros_(self.ada[-1].weight)
         nn.init.zeros_(self.ada[-1].bias)
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, c: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         sa, ca, ga, sm, cm, gm = self.ada(c).chunk(6, dim=1)
         h = _modulate(self.norm1(x), sa, ca)
-        a, _ = self.attn(h, h, h, need_weights=False)
+        if return_attn:
+            a, w = self.attn(h, h, h, need_weights=True, average_attn_weights=True)
+        else:
+            a, _ = self.attn(h, h, h, need_weights=False)
         x = x + ga.unsqueeze(1) * a
         h = _modulate(self.norm2(x), sm, cm)
         x = x + gm.unsqueeze(1) * self.mlp(h)
+        if return_attn:
+            # the adaLN-Zero gates are t-conditioned: how much this block writes
+            # back into the residual stream at the current noise level
+            return x, {"self": w, "gate_attn": ga, "gate_mlp": gm}
         return x
 
 
@@ -240,28 +249,54 @@ class JumpGateLOB(nn.Module):
     def _cond(self, t: torch.Tensor) -> torch.Tensor:
         return self.time_mlp(sinusoidal_embedding(t, self.temb_dim))
 
-    def trunk(self, x: torch.Tensor, t: torch.Tensor):
-        """Return ``(H (B,T,D), c (B,temb_dim))``."""
+    def trunk(self, x: torch.Tensor, t: torch.Tensor, return_attn: bool = False):
+        """Return ``(H (B,T,D), c (B,temb_dim))``, plus attention if requested."""
         c = self._cond(t)
         H0 = self._local(x)  # (B, T, D)
         T = H0.shape[1]
         pos = sinusoidal_embedding(torch.arange(T, device=x.device), self.D).unsqueeze(
             0
         )
+        if return_attn:
+            H, attn = self.temporal(H0 + pos, c, return_attn=True)
+            return H, c, attn
         H = self.temporal(H0 + pos, c)
         return H, c
 
-    def _trend_logits(self, H: torch.Tensor) -> torch.Tensor:
-        return self.classifier(self.cls_dropout(self.pool(H)))
+    def _trend_logits(
+        self, H: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if not return_attn:
+            return self.classifier(self.cls_dropout(self.pool(H)))
+        pooled, w = self.pool(H, return_attn=True)
+        return self.classifier(self.cls_dropout(pooled)), w
 
     # ---- task-specific passes (training uses these separately) --------------
-    def classify(self, x: torch.Tensor) -> torch.Tensor:
+    def classify(
+        self,
+        x: torch.Tensor,
+        return_attn: bool = False,
+        t: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Trend logits at ``t = 0`` — used for clean windows at inference *and* for
         jump-noised windows in the noise-consistency loss (deployment never knows the
-        noise level, so the classifier never conditions on ``t``)."""
-        t = torch.zeros(x.shape[0], dtype=torch.long, device=x.device)
-        H, _ = self.trunk(x, t)
-        return self._trend_logits(H)
+        noise level, so the classifier never conditions on ``t``).
+
+        ``return_attn`` additionally yields the trunk's temporal self-attention
+        ``"self"`` ``(B, T, T)``, the trend head's ``"pool"`` weights ``(B, T)``
+        over timesteps, and the t-conditioned adaLN-Zero gates. ``t`` overrides
+        the default zero timestep purely for analysis — sweeping it shows how the
+        trunk re-weights itself as the noise level rises; inference must leave it
+        ``None``.
+        """
+        if t is None:
+            t = torch.zeros(x.shape[0], dtype=torch.long, device=x.device)
+        if not return_attn:
+            H, _ = self.trunk(x, t)
+            return self._trend_logits(H)
+        H, _, attn = self.trunk(x, t, return_attn=True)
+        logits, pool_w = self._trend_logits(H, return_attn=True)
+        return logits, {**attn, "pool": pool_w}
 
     def score(self, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Predict the jump-diffusion score on the noised window at timestep ``t``."""

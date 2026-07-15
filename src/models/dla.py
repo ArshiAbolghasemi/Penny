@@ -43,7 +43,9 @@ class InputAttentionEncoder(nn.Module):
         self.U_e = nn.Linear(T, T, bias=False)  # applied to each driving series
         self.v_e = nn.Linear(T, 1, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         # x: (B, T, F)
         b = x.shape[0]
         driving = x.permute(0, 2, 1)  # (B, F, T) — each feature's full series
@@ -51,15 +53,21 @@ class InputAttentionEncoder(nn.Module):
         h = x.new_zeros(b, self.hidden)
         s = x.new_zeros(b, self.hidden)
         states = []
+        alphas = [] if return_attn else None
         for t in range(self.T):
             hs = torch.cat([h, s], dim=1)  # (B, 2m)
             part1 = self.W_e(hs).unsqueeze(1)  # (B, 1, T)
             e = self.v_e(torch.tanh(part1 + u_e)).squeeze(-1)  # (B, F)
             alpha = torch.softmax(e, dim=1)  # (B, F)
+            if return_attn:
+                alphas.append(alpha)
             x_tilde = alpha * x[:, t, :]  # (B, F) attention-weighted input
             h, s = self.lstm(x_tilde, (h, s))
             states.append(h)
-        return torch.stack(states, dim=1)  # (B, T, m)
+        enc = torch.stack(states, dim=1)  # (B, T, m)
+        if return_attn:
+            return enc, torch.stack(alphas, dim=1)  # (B, T, F)
+        return enc
 
 
 class TemporalAttentionDecoder(nn.Module):
@@ -75,19 +83,27 @@ class TemporalAttentionDecoder(nn.Module):
         self.U_d = nn.Linear(enc_hidden, enc_hidden, bias=False)
         self.v_d = nn.Linear(enc_hidden, 1, bias=False)
 
-    def forward(self, enc: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, enc: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         # enc: (B, T, m)
         b = enc.shape[0]
         u_d = self.U_d(enc)  # (B, T, m), constant across the loop
         d = enc.new_zeros(b, self.dec_hidden)
         s = enc.new_zeros(b, self.dec_hidden)
+        betas = [] if return_attn else None
         for _ in range(self.T):
             ds = torch.cat([d, s], dim=1)  # (B, 2p)
             part1 = self.W_d(ds).unsqueeze(1)  # (B, 1, m)
             score = self.v_d(torch.tanh(part1 + u_d)).squeeze(-1)  # (B, T)
             beta = torch.softmax(score, dim=1)  # (B, T)
+            if return_attn:
+                betas.append(beta)
             context = (beta.unsqueeze(-1) * enc).sum(dim=1)  # (B, m)
             d, s = self.lstm(context, (d, s))
+        if return_attn:
+            # every decoder step's attention; step -1 feeds the head
+            return d, torch.stack(betas, dim=1)  # (B, T_dec, T)
         return d  # (B, p) final decoder hidden state
 
 
@@ -109,12 +125,26 @@ class DLA(nn.Module):
         self.dropout = nn.Dropout(drop)
         self.head = nn.Linear(dec_h, 3)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Trend logits; with ``return_attn`` also both attention stages.
+
+        The attention dict holds ``"input"`` ``(B, T, F)`` — stage-1 weights over
+        the input features at each timestep — and ``"temporal"``
+        ``(B, T_dec, T)`` — stage-2 weights over encoder timesteps at each
+        decoder step, the last of which produces the classified state.
+        """
         if x.dim() == 4:
             x = x.squeeze(1)  # (B, 1, T, F) → (B, T, F)
-        enc = self.encoder(x)  # (B, T, m)
-        d = self.decoder(enc)  # (B, p)
-        return self.head(self.dropout(d))
+        if not return_attn:
+            enc = self.encoder(x)  # (B, T, m)
+            d = self.decoder(enc)  # (B, p)
+            return self.head(self.dropout(d))
+        enc, alpha = self.encoder(x, return_attn=True)
+        d, beta = self.decoder(enc, return_attn=True)
+        logits = self.head(self.dropout(d))
+        return logits, {"input": alpha, "temporal": beta}
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         return self(batch["x"].to(device).float())
