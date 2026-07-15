@@ -68,7 +68,7 @@ penny-stocks-diffclf         = "stocks.feishu.train_diffclf:main"
 
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/crypto", "src/models", "src/stocks"]
+packages = ["src/crypto", "src/models", "src/stocks", "src/xai"]
 
 [tool.uv.sources]
 torch = [
