@@ -102,6 +102,19 @@ def make_baseline(
     raise ValueError(f"baseline must be 'zero'|'mean'|Tensor, got {kind!r}")
 
 
+# Windows × n_steps the network may see in one IG call.  1024 runs comfortably on
+# CPU for all three models, including DLA's per-timestep Python LSTM loop; the
+# training batch_size (64) would put 4096 through it and get the process killed.
+_IG_BATCH_BUDGET = 1024
+
+
+def _ig_batch_size(requested: int | None, n_steps: int, config: dict) -> int:
+    """Windows per IG call, capped so ``batch_size × n_steps`` stays affordable."""
+    if requested is not None:
+        return requested
+    return max(1, min(config.get("batch_size", 64), _IG_BATCH_BUDGET // max(n_steps, 1)))
+
+
 @torch.no_grad()
 def _predicted_targets(model, batch, device) -> torch.Tensor:
     return model.predict(batch, device).argmax(1)
@@ -132,8 +145,14 @@ def attribute_dataset(
                     split is rarely worth it.
         n_steps:    Riemann steps along the path.  Completeness error is reported —
                     raise this if it is not small.
-        batch_size: Windows per IG call (not per forward pass; captum internally
-                    expands each window ``n_steps`` times).
+        batch_size: Windows per IG call.  **Not** the forward-pass batch: captum
+                    expands each window ``n_steps`` times, so the network really
+                    sees ``batch_size × n_steps`` samples at once.  Defaults to
+                    keeping that product near :data:`_IG_BATCH_BUDGET` rather
+                    than reusing the training ``batch_size``, which silently
+                    exhausts memory on the recurrent models (DLA's 60-step
+                    Python LSTM loop at 64×64 = 4096 windows is killed by the
+                    OS with no traceback).
         target:     ``"predicted"`` attributes each window's own argmax class —
                     explaining what the model *did*.  ``"label"`` attributes the
                     ground-truth class instead.
@@ -146,7 +165,7 @@ def attribute_dataset(
         and ``attr_mean`` is the signed ``(T, F)`` mean.
     """
     model.eval()
-    bs = batch_size or config.get("batch_size", 64)
+    bs = _ig_batch_size(batch_size, n_steps, config)
 
     idx = np.arange(len(dataset))
     if n_windows is not None and n_windows < len(idx):
@@ -210,9 +229,13 @@ def attribute_dataset(
         "baseline": baseline if isinstance(baseline, str) else "tensor",
     }
     logger.info(
-        "IG  windows={} steps={} baseline={} | max completeness err={:.3e}",
+        "IG  windows={} steps={} batch={} (x{} = {} fwd) baseline={} | "
+        "max completeness err={:.3e}",
         n_seen,
         n_steps,
+        bs,
+        n_steps,
+        bs * n_steps,
         out["baseline"],
         delta_max,
     )
