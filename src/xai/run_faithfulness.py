@@ -1,15 +1,18 @@
-"""Attention-vs-IG agreement table across the XAI layer's three models.
+"""Deletion / insertion faithfulness check for the XAI layer's three models.
 
 Usage::
 
-    uv run python -m xai.run_agreement checkpoints/nobitex/BTCIRT \
+    uv run python -m xai.run_faithfulness checkpoints/nobitex/BTCIRT \
         --models ctabl_BTCIRT_ofi_k10 dla_BTCIRT_ofi_k10 \
                  jumpgatelob_levy_BTCIRT_ofi_k10
 
-Runs IG and the attention probes over the **same** window subsample for each
-model, rank-correlates them, and writes ``agreement.json`` next to the
-checkpoints.  The time axis is comparable across all three; the feature axis
-exists only for DLA (see :mod:`xai.agreement`).
+Runs IG, then masks features in attribution order and in random order over the
+same windows, and reports the AUC gap.  Writes ``faithfulness.json``.
+
+This is the check that decides whether the attribution and agreement numbers mean
+anything: if masking the top-attributed features costs no more accuracy than
+masking random ones, the attributions carry no information about the model and
+nothing downstream of them should be reported.
 """
 
 from __future__ import annotations
@@ -29,18 +32,36 @@ from loguru import logger
 
 from crypto.dataset import build_datasets
 from utils.training import resolve_device, set_seed
-from xai.agreement import agreement, collect_attention, format_table
 from xai.attribution import attribute_dataset
+from xai.faithfulness import faithfulness
 from xai.run_ig import _resolve_model
+
+
+def _table(rows: list[dict]) -> str:
+    head = (
+        f"{'model':<12} {'del AUC':>8} {'del rand':>9} {'del d':>7} "
+        f"{'ins AUC':>8} {'ins rand':>9} {'ins d':>7}"
+    )
+    lines = [head, "-" * len(head)]
+    for r in rows:
+        d, i = r["deletion"], r["insertion"]
+        lines.append(
+            f"{r['model']:<12} {d['auc']:8.4f} {d['random_auc']:9.4f} "
+            f"{r['delta']['deletion']:+7.4f} {i['auc']:8.4f} {i['random_auc']:9.4f} "
+            f"{r['delta']['insertion']:+7.4f}"
+        )
+    return "\n".join(lines)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("root", type=Path, help="directory holding the checkpoint dirs")
+    ap.add_argument("root", type=Path)
     ap.add_argument("--models", nargs="+", required=True)
     ap.add_argument("--baseline", default="zero", choices=["zero", "mean"])
-    ap.add_argument("--n-windows", type=int, default=2048)
-    ap.add_argument("--n-steps", type=int, default=128)
+    ap.add_argument("--n-windows", type=int, default=1024)
+    ap.add_argument("--n-steps", type=int, default=64)
+    ap.add_argument("--n-points", type=int, default=11)
+    ap.add_argument("--n-random", type=int, default=5)
     ap.add_argument("--split", default="test", choices=["train", "val", "test"])
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", type=Path, default=None)
@@ -54,11 +75,8 @@ def main() -> None:
         set_seed(config.get("seed", 42))
         device = resolve_device(config.get("device", "cuda"))
 
-        # Rebuilding per model would open a fresh memmap over the same 184k-row
-        # cache for each one and never drop the old ones; the process is killed
-        # part-way through the second model. The windows must be identical across
-        # models anyway for the comparison to mean anything, so build once per
-        # distinct data spec and reuse.
+        # one dataset per distinct data spec: rebuilding per model leaks a
+        # memmap over the same cache each time (see xai.run_agreement)
         key = (
             config["symbol"],
             config["cache_dir"],
@@ -71,17 +89,13 @@ def main() -> None:
             config["val_frac"],
         )
         if key not in cache:
-            cache[key] = dict(
-                zip(("train", "val", "test"), build_datasets(config)[:3])
-            )
+            cache[key] = dict(zip(("train", "val", "test"), build_datasets(config)[:3]))
         dataset = cache[key][args.split]
 
         model = _resolve_model(ckpt_dir, config).to(device)
         ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
 
-        # IG and the probes must see the *same* windows or the correlation is
-        # comparing two different samples; both draw this index set.
         idx = np.arange(len(dataset))
         if args.n_windows < len(idx):
             idx = np.random.default_rng(args.seed).choice(
@@ -99,20 +113,38 @@ def main() -> None:
             n_steps=args.n_steps,
             seed=args.seed,
         )
-        attn = collect_attention(model, dataset, config, device, idx)
-        rows.append(agreement(ig, attn, type(model).__name__))
+        logger.info("{} faithfulness:", type(model).__name__)
+        r = faithfulness(
+            model,
+            dataset,
+            config,
+            device,
+            idx,
+            ig["per_feature"],
+            baseline=args.baseline,
+            n_points=args.n_points,
+            n_random=args.n_random,
+            seed=args.seed,
+        )
+        r["model"] = type(model).__name__
+        rows.append(r)
 
-        # drop the model, checkpoint and IG buffers before the next one; keeps
-        # the memory floor low on long multi-model sweeps
-        del model, ckpt, ig, attn
+        # Release each model's weights, checkpoint and IG buffers before the next
+        # one. Growth per model is modest (~50 MB on CPU), but large sweeps on a
+        # memory-tight box get killed by the OS with no traceback and exit 0, so
+        # keep the floor low rather than debug that twice.
+        del model, ckpt, ig
         gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
-    table = format_table(rows)
-    logger.info("attention vs IG rank agreement ({} baseline):\n{}", args.baseline, table)
-
-    out = args.out or args.root / "agreement.json"
+    logger.info(
+        "deletion/insertion vs random ({} baseline)\n"
+        "lower deletion AUC and higher insertion AUC are better\n{}",
+        args.baseline,
+        _table(rows),
+    )
+    out = args.out or args.root / "faithfulness.json"
     out.write_text(
         json.dumps(
             {
