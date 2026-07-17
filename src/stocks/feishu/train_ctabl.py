@@ -23,7 +23,7 @@ from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from utils.evaluate import run_test
+from utils.evaluate import per_asset_metrics, run_test
 from utils.flops import log_gflops
 from utils.training import (
     build_cosine_schedule,
@@ -33,7 +33,7 @@ from utils.training import (
     set_seed,
 )
 from models.ctabl import CTABL, count_parameters
-from stocks.feishu.build import build_datasets, discover_symbols
+from stocks.feishu.build import build_datasets_multi, discover_symbols
 from stocks.feishu.features import n_features as feishu_n_features
 
 
@@ -108,7 +108,7 @@ def main() -> None:
         "  params={:.2f}M  device={}", count_parameters(CTABL(config)) / 1e6, device
     )
 
-    train_ds, val_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
+    train_ds, val_ds, test_ds, meta = build_datasets_multi(config, data_dir, symbols)
     cb = meta["class_balance"]
     logger.info(
         "  windows  train={}  val={}  test={}", len(train_ds), len(val_ds), len(test_ds)
@@ -174,7 +174,13 @@ def main() -> None:
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
     ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
-    run_test(model, test_ds, config, device)
+    metrics = run_test(model, test_ds, config, device)
+    per_asset = per_asset_metrics(
+        model, test_ds, config, device, meta["symbols"], "TEST"
+    )
+    (ckpt_dir / "metrics.json").write_text(
+        json.dumps({"test": metrics, "per_asset": per_asset}, indent=2, default=str)
+    )
 
 
 if __name__ == "__main__":
