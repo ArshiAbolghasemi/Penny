@@ -194,13 +194,20 @@ def attribute_dataset(
         )
         base = make_baseline(baseline, x, dataset)
 
-        attr, delta = ig.attribute(
-            x,
-            baselines=base,
-            target=tgt,
-            n_steps=n_steps,
-            return_convergence_delta=True,
-        )
+        # cuDNN refuses to backprop through an RNN that is in eval() mode
+        # ("cudnn RNN backward can only be called in training mode"), and IG needs
+        # that backward pass — this bites JumpGateLOB/DLA on GPU but never on CPU.
+        # Disabling the cuDNN RNN path falls back to the native kernel, which has
+        # no train/eval restriction and is numerically equivalent. Scoped to the
+        # attribute() call so nothing else changes; a no-op on CPU.
+        with torch.backends.cudnn.flags(enabled=False):
+            attr, delta = ig.attribute(
+                x,
+                baselines=base,
+                target=tgt,
+                n_steps=n_steps,
+                return_convergence_delta=True,
+            )
         a = attr.squeeze(1).detach()  # (B, T, F)
         abs_a = a.abs()
 
