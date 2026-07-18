@@ -1,0 +1,21 @@
+{
+  "data_dir": "data/stocks/feishu",
+  "lob_file": "lob_data_in_sample.parquet",
+  "daily_file": "daily_data_in_sample.parquet",
+  "checkpoint_dir": "checkpoints/stocks/feishu/logreg",
+  "n_lob_levels": 10,
+  "feature_mode": "ofi",
+  "T_past": 50,
+  "alpha": 0.015,
+  "train_frac": 0.7,
+  "val_frac": 0.15,
+  "batch_size": 256,
+  "lr": 0.0001,
+  "weight_decay": 1e-05,
+  "warmup_steps": 500,
+  "grad_clip": 1.0,
+  "epochs": 80,
+  "patience": 15,
+  "device": "cuda",
+  "seed": 42
+}
