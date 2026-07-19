@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=penny-usdtirt-deeplob-lob
+#SBATCH --job-name=penny-usdtirt-jgl-ofi-k20
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=24G
+#SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH -p gpu-all
 
@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "$ROOT_DIR"
 
-echo "Penny [Nobitex USDTIRT] DeepLOB LOB | host=$(hostname) | start=$(date)"
+echo "Penny [Nobitex USDTIRT] jumpgatelob OFI k=20 | host=$(hostname) | start=$(date)"
 
 if command -v module >/dev/null 2>&1; then module purge || true; fi
 if [[ -n "${VENV_PATH:-}" ]]; then source "$VENV_PATH/bin/activate"; fi
@@ -34,8 +34,8 @@ else
     echo "UV_EXTRA=$UV_EXTRA (user override)"
 fi
 
-CONFIG="${CONFIG:-configs/crypto/nobitex/deeplob/usdtirt_lob.json}"
+CONFIG="${CONFIG:-configs/crypto/nobitex/jumpgatelob/usdtirt_ofi_k20.json}"
 export UV_PROJECT_ENVIRONMENT=".venv-${UV_EXTRA}"
 uv sync --extra "$UV_EXTRA"
-uv run python -m crypto.train_deeplob "$CONFIG"
+uv run python -m crypto.train_jumpgatelob "$CONFIG"
 echo "done: $(date)"

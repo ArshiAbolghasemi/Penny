@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=penny-usdtirt-deeplob-ofi
+#SBATCH --job-name=penny-usdtirt-ctabl-ofi-k100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "$ROOT_DIR"
 
-echo "Penny [Nobitex USDTIRT] DeepLOB OFI | host=$(hostname) | start=$(date)"
+echo "Penny [Nobitex USDTIRT] CTABL OFI k=100 | host=$(hostname) | start=$(date)"
 
 if command -v module >/dev/null 2>&1; then module purge || true; fi
 if [[ -n "${VENV_PATH:-}" ]]; then source "$VENV_PATH/bin/activate"; fi
@@ -34,8 +34,8 @@ else
     echo "UV_EXTRA=$UV_EXTRA (user override)"
 fi
 
-CONFIG="${CONFIG:-configs/crypto/nobitex/deeplob/usdtirt_ofi.json}"
+CONFIG="${CONFIG:-configs/crypto/nobitex/ctabl/usdtirt_ofi_k100.json}"
 export UV_PROJECT_ENVIRONMENT=".venv-${UV_EXTRA}"
 uv sync --extra "$UV_EXTRA"
-uv run python -m crypto.train_deeplob "$CONFIG"
+uv run python -m crypto.train_ctabl "$CONFIG"
 echo "done: $(date)"
