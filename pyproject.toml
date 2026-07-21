@@ -9,6 +9,7 @@ description = "LOB direction forecasting on crypto (Binance, Nobitex) and equity
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "dask[dataframe]>=2024.8.0",
     "dvc[s3]>=3.56.0",
     "loguru>=0.7.3",
     "numpy>=1.26.0,<2.0.0",

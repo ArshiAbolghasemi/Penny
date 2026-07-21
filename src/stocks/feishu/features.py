@@ -163,6 +163,76 @@ def snap_to_slots(ofi_df: pd.DataFrame, day_df: pd.DataFrame) -> np.ndarray:
     return out
 
 
+def compute_ofi_slots_chunk(
+    df: pd.DataFrame,
+    group_id: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorised (asset, day)-wise OFI → slot grid over a whole streamed chunk.
+
+    Equivalent to running :func:`compute_ofi_tick` + :func:`snap_to_slots` on
+    every ``(asset, day)`` group of *df* separately, but computed with a single
+    pass of array ops instead of ~1M pandas groupby iterations.  The tick shift
+    is masked at group boundaries so no OFI ever crosses an asset or a day.
+
+    Args:
+        df:       Chunk rows **already sorted** by ``(asset, day, time)``, with
+                  0-indexed ``bid/ask_price/volume_{0..9}`` columns and ``time``.
+        group_id: ``(n_rows,)`` int64 group label per row (one per (asset, day)),
+                  constant within a group and changing at every group boundary.
+
+    Returns:
+        ``(rows, cols, vals)`` scatter triplet where ``vals[k]`` belongs at
+        slot-grid position ``cols[k]`` of group ``rows[k]``.  ``cols`` indexes
+        the flattened ``(N_SLOTS, N_LEVELS)`` grid, i.e. ``slot * N_LEVELS + level``.
+        Off-grid ticks are dropped; duplicates keep last-write-wins semantics
+        when scattered in order.
+    """
+    n = len(df)
+    if n == 0:
+        empty_i = np.empty(0, dtype=np.int64)
+        return empty_i, empty_i, np.empty(0, dtype=np.float32)
+
+    bid_p = df[[f"bid_price_{i}" for i in range(N_LEVELS)]].to_numpy(np.float32)
+    bid_v = df[[f"bid_volume_{i}" for i in range(N_LEVELS)]].to_numpy(np.float32)
+    ask_p = df[[f"ask_price_{i}" for i in range(N_LEVELS)]].to_numpy(np.float32)
+    ask_v = df[[f"ask_volume_{i}" for i in range(N_LEVELS)]].to_numpy(np.float32)
+
+    def _shift(a: np.ndarray) -> np.ndarray:
+        out = np.empty_like(a)
+        out[0] = np.nan
+        out[1:] = a[:-1]
+        return out
+
+    prev_bp, prev_bv = _shift(bid_p), _shift(bid_v)
+    prev_ap, prev_av = _shift(ask_p), _shift(ask_v)
+
+    dp_b = bid_p - prev_bp
+    bofi = np.where(dp_b > 0, bid_v, np.where(dp_b < 0, -prev_bv, bid_v - prev_bv))
+    dp_a = ask_p - prev_ap
+    aofi = np.where(dp_a < 0, ask_v, np.where(dp_a > 0, -prev_av, ask_v - prev_av))
+    ofi = np.nan_to_num(bofi - aofi, nan=0.0).astype(np.float32)
+
+    # first tick of every (asset, day) group has no prior state → 0
+    first = np.empty(n, dtype=bool)
+    first[0] = True
+    first[1:] = group_id[1:] != group_id[:-1]
+    ofi[first] = 0.0
+
+    slot_idx = (
+        df["time"].astype(str).str[:5].map(_SLOT_TO_IDX).to_numpy(dtype=np.float64)
+    )
+    keep = ~np.isnan(slot_idx)
+    if not keep.any():
+        empty_i = np.empty(0, dtype=np.int64)
+        return empty_i, empty_i, np.empty(0, dtype=np.float32)
+
+    slot = slot_idx[keep].astype(np.int64)
+    rows = np.repeat(group_id[keep], N_LEVELS)
+    cols = (slot[:, None] * N_LEVELS + np.arange(N_LEVELS)[None, :]).reshape(-1)
+    vals = ofi[keep].reshape(-1)
+    return rows, cols, vals
+
+
 def causal_rolling_zscore(
     matrix: np.ndarray,
     window: int = N_OFI_ROLL,

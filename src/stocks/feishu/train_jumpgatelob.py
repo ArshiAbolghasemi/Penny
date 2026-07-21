@@ -60,7 +60,7 @@ from torch.utils.data import DataLoader
 from levy.config import DiffusionConfig
 from levy.diffusion import ForwardProcess
 from models.jumpgatelob import JumpGateLOB, count_parameters
-from utils.evaluate import per_asset_metrics, run_test
+from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
     build_cosine_schedule,
@@ -69,7 +69,7 @@ from utils.training import (
     seed_worker,
     set_seed,
 )
-from stocks.feishu.build import build_datasets_multi, discover_symbols
+from stocks.feishu.build import build_datasets, discover_symbols
 from stocks.feishu.features import n_features as feishu_n_features
 
 
@@ -300,10 +300,12 @@ def main() -> None:
         len(symbols),
     )
 
-    train_ds, val_ds, test_ds, meta = build_datasets_multi(config, data_dir, symbols)
+    train_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
     cb = meta["class_balance"]
     logger.info(
-        "  windows  train={}  val={}  test={}", len(train_ds), len(val_ds), len(test_ds)
+        "  windows  in-sample(train)={}  out-of-sample(test)={}",
+        len(train_ds),
+        len(test_ds),
     )
     logger.info(
         "  label_alpha={:.6f}  down={:.1%} stat={:.1%} up={:.1%}",
@@ -336,8 +338,10 @@ def main() -> None:
         worker_init_fn=seed_worker,
         generator=generator,
     )
-    val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
-    train_eval_batches = max(1, len(val_loader))
+    # No validation split — the model trains on every in-sample window. Epoch
+    # diagnostics are therefore in-sample, measured on a capped random slice of
+    # the (shuffled) training loader to keep them cheap.
+    eval_batches = max(1, len(train_loader) // 10)
 
     epochs = config["epochs"]
     do_diff = not args.baseline
@@ -348,41 +352,38 @@ def main() -> None:
     )
     lr_sched = build_cosine_schedule(optimizer, config, epochs * len(train_loader))
 
-    best, patience, history = float("-inf"), 0, []
+    best, history = float("inf"), []
     for epoch in range(epochs):
         tr = _train_epoch(
             model, fp, low_t, train_loader, optimizer, lr_sched, config, device, do_diff
         )
-        val_f1, val_ce, val_acc = _f1_ce_acc(model, val_loader, device)
-        train_f1, _, _ = _f1_ce_acc(model, train_loader, device, train_eval_batches)
-        noisy_f1 = _noisy_f1(model, fp, low_t, val_loader, device)
+        train_f1, train_ce, train_acc = _f1_ce_acc(
+            model, train_loader, device, eval_batches
+        )
+        noisy_f1 = _noisy_f1(model, fp, low_t, train_loader, device, eval_batches)
         row = {
             "epoch": epoch,
             **tr,
-            "val_f1": val_f1,
-            "val_ce": val_ce,
-            "val_acc": val_acc,
             "train_f1": train_f1,
-            "f1_gap": train_f1 - val_f1,
-            "noisy_val_f1": noisy_f1,
+            "train_ce": train_ce,
+            "train_acc": train_acc,
+            "noisy_train_f1": noisy_f1,
         }
         logger.info(
             "ep {} | cls={:.4f} score={:.4f} robust={:.4f}"
-            " | val_f1={:.4f} acc={:.4f} noisy_f1={:.4f} | train_f1={:.4f} gap={:+.4f}",
+            " | train_f1={:.4f} acc={:.4f} noisy_f1={:.4f}",
             epoch,
             tr["cls"],
             tr["score"],
             tr["robust"],
-            val_f1,
-            val_acc,
-            noisy_f1,
             train_f1,
-            train_f1 - val_f1,
+            train_acc,
+            noisy_f1,
         )
         history.append(row)
 
-        if val_f1 > best:
-            best, patience = val_f1, 0
+        if tr["cls"] < best:
+            best = tr["cls"]
             torch.save(
                 {
                     "model": model.state_dict(),
@@ -392,11 +393,6 @@ def main() -> None:
                 },
                 ckpt_dir / "best.pt",
             )
-        else:
-            patience += 1
-            if patience >= config["patience"]:
-                logger.info("early stopping at epoch {}", epoch)
-                break
 
     (ckpt_dir / "config.json").write_text(json.dumps(config, indent=2))
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
@@ -404,12 +400,9 @@ def main() -> None:
     model.load_state_dict(ckpt["model"])
     metrics = run_test(model, test_ds, config, device)
     report = _per_class_report(model, test_ds, config, device)
-    per_asset = per_asset_metrics(
-        model, test_ds, config, device, meta["symbols"], "TEST"
-    )
     (ckpt_dir / "metrics.json").write_text(
         json.dumps(
-            {"test": metrics, "per_class": report, "per_asset": per_asset},
+            {"out_of_sample": metrics, "per_class": report},
             indent=2,
             default=str,
         )

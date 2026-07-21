@@ -23,7 +23,7 @@ from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from utils.evaluate import per_asset_metrics, run_test
+from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
     build_cosine_schedule,
@@ -33,7 +33,7 @@ from utils.training import (
     set_seed,
 )
 from models.ctabl import CTABL, count_parameters
-from stocks.feishu.build import build_datasets_multi, discover_symbols
+from stocks.feishu.build import build_datasets, discover_symbols
 from stocks.feishu.features import n_features as feishu_n_features
 
 
@@ -52,19 +52,6 @@ def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
         total += loss.item()
         n += 1
     return total / max(n, 1)
-
-
-@torch.no_grad()
-def _validate(model, loader, device):
-    model.eval()
-    ce, correct, n = 0.0, 0, 0
-    for batch in loader:
-        label = batch["label"].to(device)
-        logits = model.predict(batch, device)
-        ce += F.cross_entropy(logits, label).item()
-        correct += (logits.argmax(1) == label).sum().item()
-        n += len(label)
-    return ce / max(len(loader), 1), correct / max(n, 1)
 
 
 def main() -> None:
@@ -108,10 +95,12 @@ def main() -> None:
         "  params={:.2f}M  device={}", count_parameters(CTABL(config)) / 1e6, device
     )
 
-    train_ds, val_ds, test_ds, meta = build_datasets_multi(config, data_dir, symbols)
+    train_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
     cb = meta["class_balance"]
     logger.info(
-        "  windows  train={}  val={}  test={}", len(train_ds), len(val_ds), len(test_ds)
+        "  windows  in-sample(train)={}  out-of-sample(test)={}",
+        len(train_ds),
+        len(test_ds),
     )
     logger.info(
         "  train balance  down={:.1%} stat={:.1%} up={:.1%}",
@@ -132,7 +121,6 @@ def main() -> None:
         worker_init_fn=seed_worker,
         generator=generator,
     )
-    val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
 
     optimizer = AdamW(
         model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
@@ -141,45 +129,28 @@ def main() -> None:
         optimizer, config, config["epochs"] * len(train_loader)
     )
 
-    best, patience, history = float("inf"), 0, []
+    best, history = float("inf"), []
     for epoch in range(config["epochs"]):
         tr_ce = _train_epoch(
             model, train_loader, optimizer, scheduler, device, grad_clip
         )
-        val_ce, val_acc = _validate(model, val_loader, device)
-        logger.info(
-            "epoch {} | tr={:.4f} val_ce={:.4f} val_acc={:.4f}",
-            epoch,
-            tr_ce,
-            val_ce,
-            val_acc,
-        )
-        history.append(
-            {"epoch": epoch, "train_ce": tr_ce, "val_ce": val_ce, "val_acc": val_acc}
-        )
+        logger.info("epoch {} | train_ce={:.4f}", epoch, tr_ce)
+        history.append({"epoch": epoch, "train_ce": tr_ce})
 
-        if val_ce < best:
-            best, patience = val_ce, 0
+        if tr_ce < best:
+            best = tr_ce
             torch.save(
                 {"model": model.state_dict(), "config": config, "epoch": epoch},
                 ckpt_dir / "best.pt",
             )
-        else:
-            patience += 1
-            if patience >= config["patience"]:
-                logger.info("early stopping at epoch {}", epoch)
-                break
 
     (ckpt_dir / "config.json").write_text(json.dumps(config, indent=2))
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
     ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
     metrics = run_test(model, test_ds, config, device)
-    per_asset = per_asset_metrics(
-        model, test_ds, config, device, meta["symbols"], "TEST"
-    )
     (ckpt_dir / "metrics.json").write_text(
-        json.dumps({"test": metrics, "per_asset": per_asset}, indent=2, default=str)
+        json.dumps({"out_of_sample": metrics}, indent=2, default=str)
     )
 
 
