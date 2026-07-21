@@ -164,7 +164,7 @@ def discover_symbols(data_dir: str | Path, config: dict | None = None) -> list[s
 
     seen: set[str] = set()
     for key in ("daily", "daily_oos"):
-        col = dd.read_parquet(paths[key], columns=[sym_col])[sym_col].compute()
+        col = dd.read_parquet(paths[key], columns=[sym_col], engine="pyarrow")[sym_col].compute()
         seen |= set(col.dropna().tolist())
     symbols = sorted(seen)
     if not symbols:
@@ -178,7 +178,7 @@ def discover_symbols(data_dir: str | Path, config: dict | None = None) -> list[s
 
 def _read_daily(path: Path, sym_col: str, day_col: str, symbols: set[str]):
     """Load one daily file (small) via dask, restricted to *symbols*."""
-    df = dd.read_parquet(path).compute()
+    df = dd.read_parquet(path, engine="pyarrow").compute()
     df = df.rename(columns={day_col: "date"})
     df["date"] = df["date"].astype(str)
     return df[df[sym_col].isin(symbols)]
@@ -214,6 +214,7 @@ def _stream_ofi_into(
     ddf = dd.read_parquet(
         path,
         columns=_lob_columns(sym_col, day_col, time_col),
+        engine="pyarrow",
         split_row_groups=n_rg,
     )
     logger.info("streaming {} in {} dask partitions", path.name, ddf.npartitions)
