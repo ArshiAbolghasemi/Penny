@@ -164,7 +164,9 @@ def discover_symbols(data_dir: str | Path, config: dict | None = None) -> list[s
 
     seen: set[str] = set()
     for key in ("daily", "daily_oos"):
-        col = dd.read_parquet(paths[key], columns=[sym_col], engine="pyarrow")[sym_col].compute()
+        col = dd.read_parquet(paths[key], columns=[sym_col], engine="pyarrow")[
+            sym_col
+        ].compute()
         seen |= set(col.dropna().tolist())
     symbols = sorted(seen)
     if not symbols:
