@@ -153,7 +153,11 @@ def main() -> None:
     # off-diagonals say how much each trunk changes across its own depth
     for k in acts:
         m = cka_matrix(acts[k], acts[k], tap_names[k], tap_names[k])
-        logger.info("CKA {} vs itself\n{}", k, format_matrix(m, tap_names[k], tap_names[k], k, k))
+        logger.info(
+            "CKA {} vs itself\n{}",
+            k,
+            format_matrix(m, tap_names[k], tap_names[k], k, k),
+        )
         out_rows.append(
             {
                 "model_a": k,

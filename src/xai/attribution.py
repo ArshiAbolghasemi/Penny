@@ -112,7 +112,9 @@ def _ig_batch_size(requested: int | None, n_steps: int, config: dict) -> int:
     """Windows per IG call, capped so ``batch_size × n_steps`` stays affordable."""
     if requested is not None:
         return requested
-    return max(1, min(config.get("batch_size", 64), _IG_BATCH_BUDGET // max(n_steps, 1)))
+    return max(
+        1, min(config.get("batch_size", 64), _IG_BATCH_BUDGET // max(n_steps, 1))
+    )
 
 
 @torch.no_grad()

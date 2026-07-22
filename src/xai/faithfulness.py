@@ -108,8 +108,15 @@ def curve(
     fracs = _fractions(F, n_points)
     accs = [
         _masked_accuracy(
-            model, dataset, indices, device, order, int(round(f * F)), mode,
-            baseline, bs,
+            model,
+            dataset,
+            indices,
+            device,
+            order,
+            int(round(f * F)),
+            mode,
+            baseline,
+            bs,
         )
         for f in fracs
     ]
@@ -154,16 +161,32 @@ def faithfulness(
 
     for mode in ("deletion", "insertion"):
         attr_curve = curve(
-            model, dataset, config, device, indices, order, mode, baseline,
-            n_points, batch_size,
+            model,
+            dataset,
+            config,
+            device,
+            indices,
+            order,
+            mode,
+            baseline,
+            n_points,
+            batch_size,
         )
         rnd_accs = []
         rnd_aucs = []
         for _ in range(n_random):
             ro = rng.permutation(len(per_feature))
             c = curve(
-                model, dataset, config, device, indices, ro, mode, baseline,
-                n_points, batch_size,
+                model,
+                dataset,
+                config,
+                device,
+                indices,
+                ro,
+                mode,
+                baseline,
+                n_points,
+                batch_size,
             )
             rnd_accs.append(c["accuracy"])
             rnd_aucs.append(c["auc"])

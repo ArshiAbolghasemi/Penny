@@ -38,7 +38,7 @@ def _center_gram(k: np.ndarray) -> np.ndarray:
     return k - unit @ k - k @ unit + unit @ k @ unit
 
 
-def _hsic_unbiased(k: np.ndarray, l: np.ndarray) -> float:
+def _hsic_unbiased(k: np.ndarray, layer: np.ndarray) -> float:
     """Unbiased HSIC estimator (Song et al. 2012).
 
     The biased estimator drifts towards 1 as ``n`` approaches the feature
@@ -47,7 +47,7 @@ def _hsic_unbiased(k: np.ndarray, l: np.ndarray) -> float:
     """
     n = k.shape[0]
     kk = k.copy()
-    ll = l.copy()
+    ll = layer.copy()
     np.fill_diagonal(kk, 0.0)
     np.fill_diagonal(ll, 0.0)
     ones = np.ones(n)
@@ -150,11 +150,18 @@ def format_matrix(
     head = f"{corner:<14}" + "".join(f"{t:>{w}}" for t in taps_b)
     lines = [head, "-" * len(head)]
     for i, ta in enumerate(taps_a):
-        lines.append(f"{ta:<14}" + "".join(f"{m[i, j]:>{w}.3f}" for j in range(len(taps_b))))
+        lines.append(
+            f"{ta:<14}" + "".join(f"{m[i, j]:>{w}.3f}" for j in range(len(taps_b)))
+        )
     return "\n".join(lines)
 
 
 def log_matrix(
     m: np.ndarray, taps_a: list[str], taps_b: list[str], name_a: str, name_b: str
 ) -> None:
-    logger.info("CKA {} vs {}\n{}", name_a, name_b, format_matrix(m, taps_a, taps_b, name_a, name_b))
+    logger.info(
+        "CKA {} vs {}\n{}",
+        name_a,
+        name_b,
+        format_matrix(m, taps_a, taps_b, name_a, name_b),
+    )

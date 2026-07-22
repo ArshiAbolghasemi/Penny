@@ -69,7 +69,9 @@ def _validate(model, loader, device):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "config", nargs="?", default="configs/crypto/nobitex/ofsatnet/usdtirt_ofi_k10.json"
+        "config",
+        nargs="?",
+        default="configs/crypto/nobitex/ofsatnet/usdtirt_ofi_k10.json",
     )
     args = parser.parse_args()
 

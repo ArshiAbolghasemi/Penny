@@ -69,7 +69,9 @@ def main() -> None:
     dataset = splits[args.split]
     idx = np.arange(len(dataset))
     if args.n_windows < len(idx):
-        idx = np.random.default_rng(args.seed).choice(idx, args.n_windows, replace=False)
+        idx = np.random.default_rng(args.seed).choice(
+            idx, args.n_windows, replace=False
+        )
         idx.sort()
 
     fp = build_forward_process(config, device)
@@ -84,7 +86,9 @@ def main() -> None:
     )
 
     gates = gate_sweep(model, dataset, config, device, idx, ts)
-    robust = robustness_sweep(model, dataset, config, device, idx, ts, fp, seed=args.seed)
+    robust = robustness_sweep(
+        model, dataset, config, device, idx, ts, fp, seed=args.seed
+    )
     logger.info("JumpGateLOB t-sweep\n{}", format_table(gates, robust, boundary))
 
     out = args.out or ckpt_dir / "gate_sweep.json"

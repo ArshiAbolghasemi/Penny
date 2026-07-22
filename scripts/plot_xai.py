@@ -169,7 +169,9 @@ def plot_attr_heatmaps(results: Path, models: list[str], outdir: Path) -> None:
     names = [n for n in MODEL_ORDER if n in data] + [
         n for n in data if n not in MODEL_ORDER
     ]
-    fig, axes = plt.subplots(1, len(names), figsize=(4.2 * len(names), 4.4), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(names), figsize=(4.2 * len(names), 4.4), squeeze=False
+    )
     im = None
     for ax, name in zip(axes[0], names):
         a = data[name]  # (T, F)
@@ -204,7 +206,9 @@ def plot_faithfulness(results: Path, outdir: Path) -> None:
             if "random_accuracy" in d:
                 ax.plot(fr, d["random_accuracy"], "--", color=_color(name), alpha=0.5)
         ax.set_title(f"{mode.capitalize()} (solid = IG order, dashed = random)")
-        ax.set_xlabel("fraction of features " + ("removed" if mode == "deletion" else "restored"))
+        ax.set_xlabel(
+            "fraction of features " + ("removed" if mode == "deletion" else "restored")
+        )
         ax.set_ylabel("accuracy")
     axes[0].legend(frameon=False, fontsize=8)
     fig.suptitle("Attribution faithfulness: deletion / insertion vs. random")
@@ -245,7 +249,9 @@ def plot_probes(results: Path, outdir: Path) -> None:
             )
     ax.set_xlabel("normalised trunk depth (shallow → deep)")
     ax.set_ylabel("linear-probe accuracy")
-    ax.set_title("Where trend becomes linearly decodable\n(solid = probe, dashed = shuffled-label control)")
+    ax.set_title(
+        "Where trend becomes linearly decodable\n(solid = probe, dashed = shuffled-label control)"
+    )
     ax.legend(frameon=False)
     _save(fig, outdir, "fig_probes")
 
@@ -262,7 +268,9 @@ def plot_cka(results: Path, outdir: Path) -> None:
     if not cross:
         print("  [skip] cka: no cross-model pairs")
         return
-    fig, axes = plt.subplots(1, len(cross), figsize=(4.0 * len(cross), 3.8), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(cross), figsize=(4.0 * len(cross), 3.8), squeeze=False
+    )
     im = None
     for ax, p in zip(axes[0], cross):
         m = np.array(p["cka"])
@@ -277,8 +285,13 @@ def plot_cka(results: Path, outdir: Path) -> None:
         for i in range(m.shape[0]):
             for k in range(m.shape[1]):
                 ax.text(
-                    k, i, f"{m[i, k]:.2f}", ha="center", va="center",
-                    color="white" if m[i, k] < 0.6 else "black", fontsize=7,
+                    k,
+                    i,
+                    f"{m[i, k]:.2f}",
+                    ha="center",
+                    va="center",
+                    color="white" if m[i, k] < 0.6 else "black",
+                    fontsize=7,
                 )
     fig.colorbar(im, ax=axes[0], shrink=0.8, label="linear CKA")
     fig.suptitle("Cross-model representational similarity (CKA)")
@@ -336,8 +349,22 @@ def plot_gate_sweep(results: Path, models: list[str], outdir: Path) -> None:
     axes[0].legend(frameon=False)
 
     if rob:
-        axes[1].plot(rob["t"], rob["accuracy_t0"], "-o", ms=3, label="deployed (t=0 cond.)", color="#55A868")
-        axes[1].plot(rob["t"], rob["accuracy_oracle"], "--s", ms=3, label="oracle (told t)", color="#8172B3")
+        axes[1].plot(
+            rob["t"],
+            rob["accuracy_t0"],
+            "-o",
+            ms=3,
+            label="deployed (t=0 cond.)",
+            color="#55A868",
+        )
+        axes[1].plot(
+            rob["t"],
+            rob["accuracy_oracle"],
+            "--s",
+            ms=3,
+            label="oracle (told t)",
+            color="#8172B3",
+        )
         axes[1].set_xlabel("jump-noise level t")
         axes[1].set_ylabel("accuracy")
         axes[1].set_title("Robustness to jump noise")

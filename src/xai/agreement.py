@@ -131,7 +131,11 @@ def collect_attention(
         else:
             raise ValueError(f"no attention reduction defined for {name}")
 
-        time_sum = tim.sum(0).cpu().numpy() if time_sum is None else time_sum + tim.sum(0).cpu().numpy()
+        time_sum = (
+            tim.sum(0).cpu().numpy()
+            if time_sum is None
+            else time_sum + tim.sum(0).cpu().numpy()
+        )
         if feat is not None:
             f = feat.sum(0).cpu().numpy()
             feat_sum = f if feat_sum is None else feat_sum + f
@@ -145,9 +149,7 @@ def collect_attention(
     return out
 
 
-def agreement(
-    ig_result: dict, attn: dict[str, np.ndarray], model_name: str
-) -> dict:
+def agreement(ig_result: dict, attn: dict[str, np.ndarray], model_name: str) -> dict:
     """Rank-correlate IG against the attention probes on every shared axis.
 
     Args:

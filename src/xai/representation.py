@@ -119,9 +119,7 @@ def collect_activations(
     """
     model.eval()
     bs = batch_size or config.get("batch_size", 64)
-    loader = DataLoader(
-        Subset(dataset, indices.tolist()), batch_size=bs, shuffle=False
-    )
+    loader = DataLoader(Subset(dataset, indices.tolist()), batch_size=bs, shuffle=False)
     grabbed: dict[str, torch.Tensor] = {}
     handles = []
 
@@ -241,11 +239,21 @@ def probe_layers(
     rows = []
     for i, tap in enumerate(taps):
         real = fit_linear_probe(
-            tr_acts[tap.name], tr_y, te_acts[tap.name], te_y, device, seed=seed,
+            tr_acts[tap.name],
+            tr_y,
+            te_acts[tap.name],
+            te_y,
+            device,
+            seed=seed,
             **probe_kw,
         )
         ctrl = fit_linear_probe(
-            tr_acts[tap.name], shuffled, te_acts[tap.name], te_y, device, seed=seed,
+            tr_acts[tap.name],
+            shuffled,
+            te_acts[tap.name],
+            te_y,
+            device,
+            seed=seed,
             **probe_kw,
         )
         row = {
@@ -264,8 +272,7 @@ def probe_layers(
         }
         rows.append(row)
         logger.info(
-            "{:<12} {:<9} d={:<4} acc={:.4f} f1={:.4f} | shuffled={:.4f} "
-            "delta={:+.4f}",
+            "{:<12} {:<9} d={:<4} acc={:.4f} f1={:.4f} | shuffled={:.4f} delta={:+.4f}",
             name,
             tap.name,
             row["dim"],

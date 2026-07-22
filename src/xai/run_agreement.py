@@ -71,9 +71,7 @@ def main() -> None:
             config["val_frac"],
         )
         if key not in cache:
-            cache[key] = dict(
-                zip(("train", "val", "test"), build_datasets(config)[:3])
-            )
+            cache[key] = dict(zip(("train", "val", "test"), build_datasets(config)[:3]))
         dataset = cache[key][args.split]
 
         model = _resolve_model(ckpt_dir, config).to(device)
@@ -110,7 +108,9 @@ def main() -> None:
             torch.cuda.empty_cache()
 
     table = format_table(rows)
-    logger.info("attention vs IG rank agreement ({} baseline):\n{}", args.baseline, table)
+    logger.info(
+        "attention vs IG rank agreement ({} baseline):\n{}", args.baseline, table
+    )
 
     out = args.out or args.root / "agreement.json"
     out.write_text(

@@ -47,7 +47,6 @@ ofsatnet_dropout        dropout (encoder + head)                       (default 
 
 from __future__ import annotations
 
-import math
 
 import torch
 import torch.nn as nn
@@ -121,9 +120,7 @@ class OFSATNet(nn.Module):
         F_dim = config["n_features"]
         L = config.get("ofsatnet_levels", 10)
         if L > F_dim:
-            raise ValueError(
-                f"ofsatnet_levels={L} exceeds n_features={F_dim}"
-            )
+            raise ValueError(f"ofsatnet_levels={L} exceeds n_features={F_dim}")
         dim = config.get("ofsatnet_dim", 64)
         heads = config.get("ofsatnet_heads", 4)
         layers = config.get("ofsatnet_layers", 2)
@@ -140,7 +137,9 @@ class OFSATNet(nn.Module):
         if x.dim() == 4:
             x = x.squeeze(1)  # (B, 1, T, F) -> (B, T, F)
 
-        h_t = self.temporal(x)  # temporal path: attends over T,   tokens = F-dim vectors
+        h_t = self.temporal(
+            x
+        )  # temporal path: attends over T,   tokens = F-dim vectors
 
         h_l = self.level(self._level_input(x))  # level path: attends over L levels
 
