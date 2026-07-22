@@ -182,3 +182,35 @@ class LevelAttention(nn.Module):
         a, _ = self.attn(hn, hn, hn, need_weights=False)
         h = h + a
         return h.reshape(b, t, f, c).permute(0, 3, 1, 2)  # (B, C, T, F)
+
+
+class LevelMLP(nn.Module):
+    """Token-mixing MLP across the ``F`` book levels (MLP-Mixer style, Tolstikhin
+    et al. 2021), applied per (batch, timestep) — same interface/contract as
+    :class:`LevelAttention` (same reshape, same internal residual) but mixes
+    across ``F`` with a 2-layer MLP instead of self-attention: no O(F^2) cost, no
+    learned queries/keys, a cheaper and simpler cross-level mixer.
+
+    Input/output ``(B, C, T, F)``.
+    """
+
+    def __init__(
+        self, channels: int, n_features: int, mult: int = 2, dropout: float = 0.0
+    ) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(channels)
+        hidden = max(1, n_features * mult)
+        self.mlp = nn.Sequential(
+            nn.Linear(n_features, hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, n_features),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, t, f = x.shape
+        h = x.permute(0, 2, 3, 1).reshape(b * t, f, c)  # (B*T, F, C) tokens = levels
+        hn = self.norm(h)
+        m = self.mlp(hn.transpose(1, 2)).transpose(1, 2)  # mix across F (tokens)
+        h = h + m
+        return h.reshape(b, t, f, c).permute(0, 3, 1, 2)  # (B, C, T, F)

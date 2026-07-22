@@ -38,6 +38,7 @@ from models.modules import (
     AttentionPool,
     BiN,
     LevelAttention,
+    LevelMLP,
     count_parameters as count_parameters,  # re-export
     sinusoidal_embedding,
 )
@@ -104,6 +105,7 @@ class DiffBlock(nn.Module):
         feat_mix: str,
         feat_heads: int,
         pad_mode: str,
+        n_features: int | None = None,
     ) -> None:
         super().__init__()
         self.norm = nn.GroupNorm(_groups(channels), channels, affine=False)
@@ -117,8 +119,12 @@ class DiffBlock(nn.Module):
             self.mix = nn.Conv2d(
                 channels, channels, (1, 3), padding=(0, 1), padding_mode=pad_mode
             )
+        elif feat_mix == "mlp":
+            if n_features is None:
+                raise ValueError("feat_mix='mlp' requires n_features")
+            self.mix = LevelMLP(channels, n_features)
         else:
-            raise ValueError(f"feat_mix must be attn|conv, got {feat_mix!r}")
+            raise ValueError(f"feat_mix must be attn|conv|mlp, got {feat_mix!r}")
 
     def forward(
         self, x: torch.Tensor, c: torch.Tensor, H: torch.Tensor
@@ -143,11 +149,14 @@ class ScoreHead(nn.Module):
         feat_mix: str,
         feat_heads: int,
         pad_mode: str,
+        n_features: int | None = None,
     ) -> None:
         super().__init__()
         self.input_projection = nn.Conv2d(1, channels, 1)
         self.blocks = nn.ModuleList(
-            DiffBlock(channels, cond_dim, ctx_dim, feat_mix, feat_heads, pad_mode)
+            DiffBlock(
+                channels, cond_dim, ctx_dim, feat_mix, feat_heads, pad_mode, n_features
+            )
             for _ in range(n_blocks)
         )
         self.out = nn.Conv2d(channels, 1, 1)  # single-channel score
@@ -233,6 +242,7 @@ class JumpGateLOB(nn.Module):
             feat_mix=config.get("jgl_feat_mix", "conv"),
             feat_heads=config.get("jgl_feat_heads", 2),
             pad_mode=config.get("jgl_pad_mode", "reflect"),
+            n_features=F_dim,
         )
 
     # ---- trunk --------------------------------------------------------------
