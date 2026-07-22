@@ -8,7 +8,7 @@ per-level order flow imbalance (OFI). The single-asset ablation of OF-MATNet.
   (ACM 3768292.3770430).
 - **Type:** discriminative classifier.
 - **Source:** `src/models/ofsatnet.py`
-- **Trainers:** `crypto.train_ofsatnet`, `stocks.feishu.train_ofsatnet`
+- **Trainers:** `crypto.train_ofsatnet`
 
 ## Idea
 
@@ -40,7 +40,7 @@ flowchart TD
     X["input (B, 1, T, F)"] --> S["squeeze -> (B, T, F)"]
 
     S --> TP["Temporal path: (B, T, F)"]
-    S --> LS["Level slice: S=1 first L cols; S>1 reshape (S,L) + avg over slots<br/>-> transpose -> (B, L, T)"]
+    S --> LS["Level slice: first L cols -> transpose -> (B, L, T)"]
 
     subgraph TEMP["Temporal attention axis"]
         direction TB
@@ -69,26 +69,15 @@ flowchart TD
 
 ### Level-path input layout
 
-The Level path needs the `L` per-level OFI series, but how the `L` levels sit in the
-feature vector differs between the two pipelines — controlled by
-`ofsatnet_level_slots` (`S`):
-
-- **Crypto (`S = 1`, default).** The first `L` feature columns *are* the per-level
-  OFI (level `0..L-1`; see `crypto/features.py` OFI mode), so the Level path slices
-  `[:, :, :L]` directly — a genuine depth axis.
-- **Feishu (`S = 24`).** Feishu's OFI block is a flattened `S × L` intraday grid
-  (`S=24` ten-minute slots × `L=10` levels, row-major; see
-  `stocks/feishu/features.py`). Slicing `[:, :, :L]` would pick only slot 0's
-  levels (one, often zero-filled, intraday slot). Instead the first `S*L` columns
-  are reshaped to `(S, L)` and **averaged across the `S` slots per level**,
-  recovering a true length-`L` level axis aggregated over the trading day.
+The first `L` feature columns *are* the per-level OFI (level `0..L-1`; see
+`crypto/features.py` OFI mode), so the Level path slices `[:, :, :L]` directly — a
+genuine depth axis.
 
 ## Config keys
 
 | Key | Meaning | Default |
 |-----|---------|---------|
-| `ofsatnet_levels`      | order-book levels `L` forming the Level path (paper: `L=10`); `ofsatnet_level_slots * L` must be `<= n_features` | 10 |
-| `ofsatnet_level_slots` | `S`: intraday slots the OFI block is organized into. `1` = first `L` columns are the per-level slice (crypto); `>1` reshapes the first `S*L` columns to `(S, L)` and averages across slots per level (Feishu) | 1 |
+| `ofsatnet_levels`      | order-book levels `L` forming the Level path (paper: `L=10`); must be `<= n_features` | 10 |
 | `ofsatnet_dim`         | shared projection dim `D`                        | 64 |
 | `ofsatnet_heads`       | attention heads per Transformer encoder           | 4 |
 | `ofsatnet_layers`      | Transformer encoder layers per path               | 2 |
@@ -103,5 +92,4 @@ return — see [README](README.md#shared-training-protocol)).
 
 ```bash
 uv run python -m crypto.train_ofsatnet configs/crypto/nobitex/ofsatnet/usdtirt_ofi_k10.json
-uv run python -m stocks.feishu.train_ofsatnet configs/stocks/feishu/ofsatnet_ofi.json
 ```

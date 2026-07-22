@@ -30,32 +30,14 @@ Output: ``(B, 3)`` class logits  (0=down, 1=stationary, 2=up).
 
 Level-path input layout
 ------------------------
-The Level path needs the ``L`` per-level OFI series. How the ``L`` levels sit in
-the feature vector differs between the two pipelines, controlled by
-``ofsatnet_level_slots`` (S):
-
-  S = 1 (crypto, default)
-      The first ``L`` feature columns *are* the per-level OFI (level 0..L-1) —
-      see ``crypto/features.py`` OFI mode — so the Level path slices ``[:, :, :L]``
-      directly.
-
-  S > 1 (Feishu)
-      Feishu's OFI block is a flattened ``S × L`` intraday grid (S=24 ten-minute
-      slots × L levels, row-major: ``[slot0_lvl0..slot0_lvl(L-1), slot1_lvl0, ...]``
-      — see ``stocks/feishu/features.py``). Slicing ``[:, :, :L]`` would pick only
-      slot 0's levels (a single, often zero-filled intraday slot), which is not a
-      genuine depth axis. Instead the first ``S*L`` columns are reshaped to
-      ``(S, L)`` and **averaged across the S slots per level**, yielding a true
-      length-``L`` level axis aggregated over the trading day.
+The Level path needs the ``L`` per-level OFI series. The first ``L`` feature
+columns *are* the per-level OFI (level 0..L-1) — see ``crypto/features.py`` OFI
+mode — so the Level path slices ``[:, :, :L]`` directly.
 
 Config keys
 -----------
 ofsatnet_levels        number of order-book levels L forming the Level path
                         (must be <= n_features)                        (default 10)
-ofsatnet_level_slots   S: intraday slots the OFI block is organized into; 1 means
-                        the first L columns are the per-level OFI slice (crypto),
-                        >1 reshapes the first S*L columns to (S, L) and averages
-                        across slots per level (Feishu)                (default 1)
 ofsatnet_dim            shared projection dim D                        (default 64)
 ofsatnet_heads          attention heads per Transformer encoder         (default 4)
 ofsatnet_layers         Transformer encoder layers per path             (default 2)
@@ -138,13 +120,9 @@ class OFSATNet(nn.Module):
         T = config["T_past"]
         F_dim = config["n_features"]
         L = config.get("ofsatnet_levels", 10)
-        slots = config.get("ofsatnet_level_slots", 1)
-        if slots < 1:
-            raise ValueError(f"ofsatnet_level_slots must be >= 1, got {slots}")
-        if slots * L > F_dim:
+        if L > F_dim:
             raise ValueError(
-                f"ofsatnet_level_slots*ofsatnet_levels={slots * L} "
-                f"exceeds n_features={F_dim}"
+                f"ofsatnet_levels={L} exceeds n_features={F_dim}"
             )
         dim = config.get("ofsatnet_dim", 64)
         heads = config.get("ofsatnet_heads", 4)
@@ -153,7 +131,6 @@ class OFSATNet(nn.Module):
         drop = config.get("ofsatnet_dropout", 0.1)
 
         self.L = L
-        self.slots = slots
         self.temporal = AttentionAxis(F_dim, T, dim, heads, layers, ff_dim, drop)
         self.level = AttentionAxis(T, L, dim, heads, layers, ff_dim, drop)
         self.dropout = nn.Dropout(drop)
@@ -173,16 +150,9 @@ class OFSATNet(nn.Module):
     def _level_input(self, x: torch.Tensor) -> torch.Tensor:
         """Extract the (B, L, T) per-level OFI series for the Level path.
 
-        S=1: first L columns are the per-level OFI (crypto). S>1: first S*L
-        columns are a flattened (S slots, L levels) grid (Feishu) — reshape and
-        average across the S intraday slots to recover a genuine per-level axis.
+        The first L columns are the per-level OFI (see crypto/features.py OFI mode).
         """
-        b, t, _ = x.shape
-        if self.slots == 1:
-            levels = x[:, :, : self.L]  # (B, T, L)
-        else:
-            grid = x[:, :, : self.slots * self.L].reshape(b, t, self.slots, self.L)
-            levels = grid.mean(dim=2)  # (B, T, L) — averaged across intraday slots
+        levels = x[:, :, : self.L]  # (B, T, L)
         return levels.transpose(1, 2)  # (B, L, T) — tokens = per-level series
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
