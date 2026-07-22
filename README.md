@@ -19,8 +19,8 @@ established **discriminative baselines** alongside the joint models for comparis
   power-law-tailed forward process).
 - **Discriminative baselines:** DeepLOB, CTABL, BiN-CTABL, TLOB, DLA, Axial-LOB.
 
-See **[docs/models](docs/models/README.md)** for every model and **[docs/data](docs/data/README.md)**
-for the data pipeline.
+See **[docs/models](docs/models/README.md)** for every model, **[docs/data](docs/data/README.md)**
+for the data pipeline, and **[docs/xai](docs/xai/README.md)** for the explainability layer.
 
 ## Setup
 
@@ -118,6 +118,7 @@ symbol has no horizon sweep.
 |------|-----------|
 | **Data** — exchanges, resampling, features, labels, windowing, normalisation | [docs/data/README.md](docs/data/README.md) |
 | **Models** — every architecture + training procedure (with diagrams) | [docs/models/README.md](docs/models/README.md) |
+| **XAI** — attribution, probes, CKA, attention-vs-IG agreement (with diagrams) | [docs/xai/README.md](docs/xai/README.md) |
 
 Per-topic files:
 
@@ -129,16 +130,21 @@ Per-topic files:
   [DLA](docs/models/dla.md) · [Axial-LOB](docs/models/axiallob.md) ·
   [JointDiT](docs/models/jointdit.md) · [JumpGateLOB](docs/models/jumpgatelob.md) ·
   [AlphaStableLOB](docs/models/alphastablelob.md)
+- XAI: [attribution](docs/xai/attribution.md) · [faithfulness](docs/xai/faithfulness.md) ·
+  [probes](docs/xai/probes.md) · [CKA](docs/xai/cka.md) ·
+  [agreement](docs/xai/agreement.md) · [gate sweep](docs/xai/gate-sweep.md) ·
+  [attention readouts](docs/xai/attention-readouts.md) · [running the layer](docs/xai/run-all.md)
 
 ## Repository layout
 
 ```
 configs/          per-model / per-symbol / per-horizon JSON configs
-scripts/          resample_binance.py, resample_nobitex.py, find_alpha.py
+scripts/          resample_binance.py, resample_nobitex.py, find_alpha.py, plot_xai.py
 slurm/            SLURM batch scripts mirroring configs/
 src/
   crypto/         data pipeline (features, labels, dataset, loader) + train_*.py entry points
   models/         model architectures + shared diffusion machinery (ddpm, consistency, drift, probe)
+  xai/            explainability layer (IG attribution, probes, CKA, agreement, gate sweep) + run_all
   levy/           Lévy jump-diffusion forward process + tabulated generalized score
   stocks/feishu/  equity (A-share) pipeline — DeepLOB only
   utils/          training loop helpers, evaluation, FLOPs, PCGrad

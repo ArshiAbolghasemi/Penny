@@ -67,13 +67,18 @@ class TABL(nn.Module):
         nn.init.xavier_uniform_(self.W1)
         nn.init.xavier_uniform_(self.W2)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         x = torch.einsum("od,bdt->bot", self.W1, x)  # (B, d2, t1)
         e = torch.einsum("bot,tu->bou", x, self.W)  # (B, d2, t1)
         a = torch.softmax(e, dim=-1)  # temporal attention
         lam = self.lam.clamp(0.0, 1.0)
         x = lam * (x * a) + (1.0 - lam) * x
-        return torch.einsum("bot,ts->bos", x, self.W2) + self.B  # (B, d2, t2)
+        out = torch.einsum("bot,ts->bos", x, self.W2) + self.B  # (B, d2, t2)
+        if return_attn:
+            return out, a
+        return out
 
 
 class CTABLBody(nn.Module):
@@ -93,12 +98,18 @@ class CTABLBody(nn.Module):
         self.tabl = TABL(d2, t2, 3, 1)
         self.dropout = nn.Dropout(drop)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         # x: (B, D, T)
         x = self.dropout(self.bl1(x))
         x = self.dropout(self.bl2(x))
-        x = self.tabl(x)  # (B, 3, 1)
-        return x.squeeze(-1)  # (B, 3)
+        if not return_attn:
+            x = self.tabl(x)  # (B, 3, 1)
+            return x.squeeze(-1)  # (B, 3)
+        x, a = self.tabl(x, return_attn=True)
+        attn = {"temporal": a, "lam": self.tabl.lam.detach().clamp(0.0, 1.0)}
+        return x.squeeze(-1), attn
 
 
 class CTABL(nn.Module):
@@ -110,9 +121,18 @@ class CTABL(nn.Module):
         super().__init__()
         self.body = CTABLBody(config)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Trend logits; with ``return_attn`` also the TABL readouts.
+
+        The attention dict holds ``"temporal"`` ``(B, d2, t2)`` — the TABL
+        softmax over the (halved) temporal axis per output feature — and
+        ``"lam"``, the scalar the layer learned for mixing attention against the
+        raw bilinear path (0 = attention unused, 1 = attention only).
+        """
         x = x.squeeze(1).transpose(1, 2)  # (B, 1, T, F) -> (B, F=D, T)
-        return self.body(x)
+        return self.body(x, return_attn=return_attn)
 
     def predict(self, batch: dict, device: torch.device) -> torch.Tensor:
         return self(batch["x"].to(device).float())

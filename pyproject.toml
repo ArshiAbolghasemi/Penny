@@ -9,6 +9,9 @@ description = "LOB direction forecasting on crypto (Binance, Nobitex) and equity
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    # captum 0.9 requires torch>=2.3, which conflicts with the cu118 extra (torch 2.1.2);
+    # 0.8.x only needs torch>=1.10 and so works under every hardware extra.
+    "captum>=0.8.0,<0.9.0",
     "dask[dataframe]>=2024.8.0",
     "dvc[s3]>=3.56.0",
     "loguru>=0.7.3",
@@ -66,7 +69,7 @@ penny-stocks-diffclf         = "stocks.feishu.train_diffclf:main"
 
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/crypto", "src/models", "src/stocks"]
+packages = ["src/crypto", "src/models", "src/stocks", "src/xai"]
 
 [tool.uv.sources]
 torch = [

@@ -60,10 +60,17 @@ class AttentionPool(nn.Module):
         self.query = nn.Parameter(torch.randn(1, 1, dim) * 0.02)
         self.attn = nn.MultiheadAttention(dim, heads, dropout=dropout, batch_first=True)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, return_attn: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """Pooled summary; with ``return_attn`` also the ``(B, N)`` pooling
+        weights — how much each token contributed to the summary."""
         q = self.query.expand(x.shape[0], -1, -1)
-        out, _ = self.attn(q, x, x, need_weights=False)
-        return out.squeeze(1)
+        if not return_attn:
+            out, _ = self.attn(q, x, x, need_weights=False)
+            return out.squeeze(1)
+        out, w = self.attn(q, x, x, need_weights=True, average_attn_weights=True)
+        return out.squeeze(1), w.squeeze(1)  # (B, D), (B, N)
 
 
 # ── Sinusoidal time embedding ─────────────────────────────────────────────────

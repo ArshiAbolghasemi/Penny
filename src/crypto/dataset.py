@@ -1,6 +1,7 @@
 """Windowed LOB dataset shared across DeepLOB, JointDiffusion, and LOBTransformer.
 
-Features are pre-normalised per calendar day by the loader.  The memmap is
+Features are pre-normalised by the loader with a causal trailing rolling
+z-score spanning day boundaries (see ``crypto.loader``).  The memmap is
 accessed page-by-page so RAM scales with ``batch_size × T_past × F``, not
 total dataset size.
 """
