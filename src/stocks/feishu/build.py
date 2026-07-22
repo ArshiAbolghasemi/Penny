@@ -1,23 +1,57 @@
 """In-RAM feature builder + dataset factory for Feishu A-share equity data.
 
+Train / eval protocol
+---------------------
+Three splits, assigned by each window's **label day**:
+
+    train : in-sample, first 80%    (D001 … ~D387)   — fit
+    val   : in-sample, last 20%     (~D388 … D484)   — model selection
+    test  : out-of-sample file      (D485 … D726)    — final metrics
+
+The 80/20 in-sample cut is chronological *per asset* (override with
+``config['train_frac']``); the model is checkpointed on its best val metric and
+scored once on the untouched out-of-sample test set.
+
+All three are built into a single contiguous per-asset feature matrix so that
+windows and rolling statistics carry across the boundaries — the first
+``T_past`` out-of-sample days are evaluable because their look-back reaches back
+into the in-sample tail.  A window is assigned by its label day, so nothing a
+training label depends on is ever a val or test prediction target.
+
+Every normalisation is point-in-time: the OFI rolling z-score is causal
+(strictly earlier days only) and the OHLCV z-score is cross-sectional within a
+single day.  Computing them over the concatenated series therefore leaks no
+future information into the training windows — no train-period feature depends
+on any val or out-of-sample day, so val is a trustworthy selection signal.
+
 Memory model
 ------------
 The whole feature matrix is built **in RAM** every run — no disk cache. We hold
-a single per-(asset, day) feature array of shape ``(N_rows, NF)`` (~1 GB for the
-in-sample set: ~1.06M day-rows × 259 float32 features) and slide T-day windows
-lazily at training time (see :class:`~stocks.feishu.dataset.LOBDataset`).
-Materialising every window would instead duplicate each day ~T times (tens of
-GB), so the compact day-matrix + lazy slicing is both small and fast.
+a single per-(asset, day) feature array of shape ``(N_rows, NF)`` (~1.7 GB for
+in-sample + out-of-sample: ~1.6M day-rows × 259 float32 features) and slide
+T-day windows lazily at training time (see
+:class:`~stocks.feishu.dataset.LOBDataset`).  Materialising every window would
+instead duplicate each day ~T times (tens of GB).
+
+The LOB parquet files are far too large to load whole (~3 GB on disk, ~10 GB as
+a DataFrame), so they are streamed with **dask**: ``dd.read_parquet`` splits the
+file into row-group partitions that are read (in parallel) and reduced into the
+feature matrix one at a time, bounding peak RAM to a single partition.  Both LOB
+files are sorted by trade day, so a chunk boundary can only ever split a day —
+the trailing day of each partition is buffered and prepended to the next so no
+(asset, day) group is ever computed from partial data.
 
 Building fresh each run (rather than reusing a memmap cache) guarantees the
 features always reflect the current normalisation code — a stale cache built
 before a normalisation fix is the classic source of NaN losses.
 
-Expected data_dir contents (two flat multi-asset parquet files)::
+Expected data_dir contents (flat multi-asset parquet files)::
 
     data_dir/
-      lob_data.parquet              # 5-min LOB snapshots, all symbols
-      daily_ohlcv.parquet           # daily OHLCV, all symbols
+      lob_data_in_sample.parquet                      # 5-min LOB snapshots
+      daily_data_in_sample.parquet                    # daily OHLCV
+      lob_data_release_stage_out_of_sample.parquet
+      daily_data_release_stage_out_of_sample.parquet
 
 LOB file columns: asset_id, trade_day_id, time (HH:MM:SS),
   bid_price_1..10, ask_price_1..10, bid_volume_1..10, ask_volume_1..10.
@@ -34,22 +68,17 @@ A window of T days ending at day t is paired with the row label at day t+1:
 By end-of-day t the trader knows all features through day t but NOT the
 morning vwap of day t+1 (the entry price), so there is zero leakage.
 
-Split
------
-Per-asset chronological split of that asset's windows:
-  train : first 70 %   val : next 15 %   test : last 15 %
-
 Public API
 ----------
-- discover_symbols(data_dir, config) → sorted list of symbol names (asset_id)
-- build_datasets(config, data_dir, symbols)
-      → (train_ds, val_ds, test_ds, meta)
+- discover_symbols(data_dir, config) → sorted symbols across both periods
+- build_datasets(config, data_dir, symbols) → (train_ds, val_ds, test_ds, meta)
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 from loguru import logger
@@ -61,21 +90,47 @@ from stocks.feishu.features import (
     N_OFI,
     N_OHLCV,
     causal_rolling_zscore,
-    compute_ofi_tick,
+    compute_ofi_slots_chunk,
     compute_ohlcv_features,
     n_features,
-    snap_to_slots,
 )
 from stocks.feishu.labels import assign_labels, compute_forward_returns
 
 _LOB_FILE = "lob_data_in_sample.parquet"
 _DAILY_FILE = "daily_data_in_sample.parquet"
+_LOB_FILE_OOS = "lob_data_release_stage_out_of_sample.parquet"
+_DAILY_FILE_OOS = "daily_data_release_stage_out_of_sample.parquet"
 _SYM_COL = "asset_id"
 _DAY_COL = "trade_day_id"
 _TIME_COL = "time"
 
-_TRAIN_FRAC = 0.70
-_VAL_CUM = 0.85  # cumulative; val = [70%, 85%), test = [85%, 100%)
+# Row groups per streamed LOB partition. Each row group is ~200k rows, so 8
+# keeps a partition around 1.6M rows (~0.5 GB) — small enough to hold twice
+# (partition + carry-over buffer) on any training node.
+_ROW_GROUPS_PER_CHUNK = 8
+
+# In-sample chronological train/val cut: first 80% of each asset's in-sample
+# windows fit the model, the last 20% select it. Override with config["train_frac"].
+_INSAMPLE_TRAIN_FRAC = 0.80
+
+
+def _paths(data_dir: str | Path, config: dict) -> dict[str, Path]:
+    """Resolve the four parquet paths from config (with defaults)."""
+    root = Path(data_dir).resolve()
+    return {
+        "lob": root / config.get("lob_file", _LOB_FILE),
+        "daily": root / config.get("daily_file", _DAILY_FILE),
+        "lob_oos": root / config.get("lob_file_oos", _LOB_FILE_OOS),
+        "daily_oos": root / config.get("daily_file_oos", _DAILY_FILE_OOS),
+    }
+
+
+def _require(paths: dict[str, Path]) -> None:
+    missing = [str(p) for p in paths.values() if not p.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Missing Feishu data file(s):\n  " + "\n  ".join(missing)
+        )
 
 
 def _lob_rename(df: pd.DataFrame) -> pd.DataFrame:
@@ -89,66 +144,192 @@ def _lob_rename(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=rename)
 
 
+def _lob_columns(sym_col: str, day_col: str, time_col: str) -> list[str]:
+    cols = [sym_col, day_col, time_col]
+    for i in range(N_LEVELS):
+        j = i + 1
+        cols += [
+            f"bid_price_{j}",
+            f"ask_price_{j}",
+            f"bid_volume_{j}",
+            f"ask_volume_{j}",
+        ]
+    return cols
+
+
 def discover_symbols(data_dir: str | Path, config: dict | None = None) -> list[str]:
-    """Return sorted list of asset_id values present in the LOB flat file."""
+    """Return the sorted union of asset ids across both daily files.
+
+    The universe spans both periods: assets that only trade in-sample still
+    contribute training windows, and assets that only appear out-of-sample are
+    still evaluated (with an untrained asset embedding, for models that use one).
+    """
     if config is None:
         config = {}
-    root = Path(data_dir).resolve()
-    lob_file = config.get("lob_file", _LOB_FILE)
+    paths = _paths(data_dir, config)
+    _require(paths)
     sym_col = config.get("symbol_col", _SYM_COL)
-    p = root / lob_file
-    if not p.exists():
-        raise FileNotFoundError(
-            f"LOB file not found: {p}\n"
-            f"Contents of {root}: {sorted(e.name for e in root.iterdir())}"
-        )
-    lob = pd.read_parquet(p, columns=[sym_col])
-    symbols = sorted(lob[sym_col].dropna().unique().tolist())
+
+    seen: set[str] = set()
+    for key in ("daily", "daily_oos"):
+        col = dd.read_parquet(paths[key], columns=[sym_col], engine="pyarrow")[
+            sym_col
+        ].compute()
+        seen |= set(col.dropna().tolist())
+    symbols = sorted(seen)
     if not symbols:
-        raise ValueError(f"No symbols found in column '{sym_col}' of {p}")
-    logger.info("Discovered {} symbols from {}", len(symbols), lob_file)
+        raise ValueError(f"No symbols found in column '{sym_col}'")
+    logger.info("Discovered {} symbols (in-sample ∪ out-of-sample)", len(symbols))
     return symbols
 
 
 # ── feature build (in RAM) ───────────────────────────────────────────────────
 
 
+def _read_daily(path: Path, sym_col: str, day_col: str, symbols: set[str]):
+    """Load one daily file (small) via dask, restricted to *symbols*."""
+    df = dd.read_parquet(path, engine="pyarrow").compute()
+    df = df.rename(columns={day_col: "date"})
+    df["date"] = df["date"].astype(str)
+    return df[df[sym_col].isin(symbols)]
+
+
+def _stream_ofi_into(
+    path: Path,
+    config: dict,
+    ofi_block: np.ndarray,
+    sym_to_idx: dict[str, int],
+    day_to_idx: dict[str, int],
+    row_of: np.ndarray,
+) -> None:
+    """Stream one LOB parquet file and accumulate raw slot-OFI into *ofi_block*.
+
+    Reads the file as dask row-group partitions and reduces each into
+    ``ofi_block`` in place, so peak memory is one partition rather than the
+    whole file.  The file is trade-day sorted, so only the final day of a
+    partition can be incomplete; those rows are carried into the next partition.
+
+    Args:
+        ofi_block:  ``(N_rows, N_OFI)`` float32 destination, indexed by global row.
+        sym_to_idx: symbol → asset index.
+        day_to_idx: day string → global day index.
+        row_of:     ``(n_assets, n_days)`` int64 lookup, -1 where the
+                    (asset, day) pair has no daily row.
+    """
+    sym_col = config.get("symbol_col", _SYM_COL)
+    day_col = config.get("day_col", _DAY_COL)
+    time_col = config.get("time_col", _TIME_COL)
+    n_rg = int(config.get("lob_row_groups_per_chunk", _ROW_GROUPS_PER_CHUNK))
+
+    ddf = dd.read_parquet(
+        path,
+        columns=_lob_columns(sym_col, day_col, time_col),
+        engine="pyarrow",
+        split_row_groups=n_rg,
+    )
+    logger.info("streaming {} in {} dask partitions", path.name, ddf.npartitions)
+
+    carry: pd.DataFrame | None = None
+    for i in range(ddf.npartitions):
+        part = ddf.partitions[i].compute()
+        if carry is not None and len(carry):
+            part = pd.concat([carry, part], ignore_index=True)
+            carry = None
+        if part.empty:
+            continue
+
+        # hold back the last (possibly truncated) trade day for the next chunk
+        if i < ddf.npartitions - 1:
+            last_day = part[day_col].iloc[-1]
+            tail = part[day_col] == last_day
+            carry, part = part[tail].copy(), part[~tail]
+            if part.empty:
+                continue
+
+        _reduce_lob_chunk(
+            part, sym_col, day_col, time_col, ofi_block, sym_to_idx, day_to_idx, row_of
+        )
+
+    if carry is not None and len(carry):
+        _reduce_lob_chunk(
+            carry, sym_col, day_col, time_col, ofi_block, sym_to_idx, day_to_idx, row_of
+        )
+
+
+def _reduce_lob_chunk(
+    part: pd.DataFrame,
+    sym_col: str,
+    day_col: str,
+    time_col: str,
+    ofi_block: np.ndarray,
+    sym_to_idx: dict[str, int],
+    day_to_idx: dict[str, int],
+    row_of: np.ndarray,
+) -> None:
+    """Compute slot-OFI for every (asset, day) in *part* and scatter into rows."""
+    a_idx = part[sym_col].map(sym_to_idx).to_numpy(dtype=np.float64)
+    d_idx = part[day_col].astype(str).map(day_to_idx).to_numpy(dtype=np.float64)
+    known = ~(np.isnan(a_idx) | np.isnan(d_idx))
+    if not known.any():
+        return
+
+    part = part[known]
+    a_idx = a_idx[known].astype(np.int64)
+    d_idx = d_idx[known].astype(np.int64)
+    rows = row_of[a_idx, d_idx]  # global feature row per tick
+    have_row = rows >= 0
+    if not have_row.any():
+        return
+    part, rows = part[have_row], rows[have_row]
+
+    # sort ticks into (asset, day, time) order — stable, so ties keep file order
+    times = part[time_col].astype(str).to_numpy()
+    order = np.lexsort((times, rows))
+    part = _lob_rename(part.iloc[order].reset_index(drop=True))
+    rows = rows[order]
+
+    # `rows` is constant within an (asset, day) group and changes at every
+    # boundary, so it doubles as the group id for the vectorised OFI pass.
+    grp_rows, grp_cols, vals = compute_ofi_slots_chunk(part, rows)
+    if len(vals):
+        ofi_block[grp_rows, grp_cols] = vals
+
+
 def _build_feature_matrix(
     config: dict,
     data_dir: str | Path,
     symbols: list[str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, list[str]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, list[str]]:
     """Build the per-(asset, day) feature matrix and row arrays in RAM.
 
-    Built fresh from the parquet files every call — no disk cache — so the
-    features always reflect the current normalisation code.
+    In-sample and out-of-sample days are concatenated per asset in date order,
+    so rolling statistics and T-day windows carry across the period boundary.
 
     Returns:
-        ``(feat, row_labels, row_asset, NF, ordered_syms)`` where
+        ``(feat, row_labels, row_asset, row_oos, NF, ordered_syms)`` where
           feat         : ``(N_rows, NF)`` float32 array (in RAM).
           row_labels   : ``(N_rows,)`` int64 causal labels (-1 = invalid).
           row_asset    : ``(N_rows,)`` int64 asset index per row (contiguous).
+          row_oos      : ``(N_rows,)`` bool, True for out-of-sample days.
           NF           : feature count.
           ordered_syms : list[str] of symbols in row order.
     """
     nf = n_features(config)
     alpha = config["alpha"]
-    n_lob_feat = N_OFI
-    root = Path(data_dir).resolve()
     sym_col = config.get("symbol_col", _SYM_COL)
     day_col = config.get("day_col", _DAY_COL)
-    time_col = config.get("time_col", _TIME_COL)
-    lob_file = config.get("lob_file", _LOB_FILE)
-    daily_file = config.get("daily_file", _DAILY_FILE)
+    paths = _paths(data_dir, config)
+    _require(paths)
 
     logger.info("building feishu features (RAM) mode=OFI nf={}", nf)
 
     # ── Pass 1 (daily, small): per-asset OHLCV raw feats, labels, day order ──
-    daily_all = pd.read_parquet(root / daily_file).rename(columns={day_col: "date"})
-    daily_all["date"] = daily_all["date"].astype(str)
-
     sym_set = set(symbols)
-    daily_all = daily_all[daily_all[sym_col].isin(sym_set)]
+    daily_is = _read_daily(paths["daily"], sym_col, day_col, sym_set)
+    daily_oos = _read_daily(paths["daily_oos"], sym_col, day_col, sym_set)
+    oos_days = set(daily_oos["date"].unique().tolist())
+    daily_all = pd.concat([daily_is, daily_oos], ignore_index=True)
+    del daily_is, daily_oos
 
     dates_map: dict[str, list[str]] = {}
     ohlcv_raw_map: dict[str, np.ndarray] = {}  # sym → (n_days, 19)
@@ -174,7 +355,7 @@ def _build_feature_matrix(
     ordered_syms = [s for s in symbols if s in dates_map]
     ranges: dict[str, tuple[int, int]] = {}
     ptr = 0
-    for i, sym in enumerate(ordered_syms):
+    for sym in ordered_syms:
         n_days = len(dates_map[sym])
         ranges[sym] = (ptr, ptr + n_days)
         ptr += n_days
@@ -183,76 +364,68 @@ def _build_feature_matrix(
         raise ValueError("No (asset, day) rows to build — check data files.")
 
     sym_to_idx = {s: i for i, s in enumerate(ordered_syms)}
+    all_days = sorted({d for sym in ordered_syms for d in dates_map[sym]})
+    day_to_idx = {d: i for i, d in enumerate(all_days)}
+
     feat = np.zeros((n_rows, nf), dtype=np.float32)
     row_labels = np.full(n_rows, -1, dtype=np.int64)
     row_asset = np.empty(n_rows, dtype=np.int64)
+    row_oos = np.zeros(n_rows, dtype=bool)
     ohlcv_block = np.zeros((n_rows, N_OHLCV), dtype=np.float32)
+    row_of = np.full((len(ordered_syms), len(all_days)), -1, dtype=np.int64)
 
     for sym in ordered_syms:
         lo, hi = ranges[sym]
-        row_asset[lo:hi] = sym_to_idx[sym]
+        a = sym_to_idx[sym]
+        row_asset[lo:hi] = a
         row_labels[lo:hi] = labels_map[sym]
         ohlcv_block[lo:hi] = ohlcv_raw_map[sym]
+        d_idx = np.fromiter(
+            (day_to_idx[d] for d in dates_map[sym]), dtype=np.int64, count=hi - lo
+        )
+        row_of[a, d_idx] = np.arange(lo, hi, dtype=np.int64)
+        row_oos[lo:hi] = [d in oos_days for d in dates_map[sym]]
 
-    # ── Pass 2 (LOB, large): per-asset OFI features → feat[:, :n_lob] ────
-    lob_cols = [sym_col, day_col, time_col]
-    for i in range(N_LEVELS):
-        j = i + 1
-        lob_cols += [
-            f"bid_price_{j}",
-            f"ask_price_{j}",
-            f"bid_volume_{j}",
-            f"ask_volume_{j}",
-        ]
-    lob_all = pd.read_parquet(root / lob_file, columns=lob_cols)
-    lob_all = _lob_rename(lob_all).rename(columns={day_col: "date"})
-    lob_all["date"] = lob_all["date"].astype(str)
-    lob_all = lob_all[lob_all[sym_col].isin(set(ordered_syms))]
+    logger.info(
+        "rows: {:,} total ({:,} in-sample, {:,} out-of-sample) over {} assets",
+        n_rows,
+        int((~row_oos).sum()),
+        int(row_oos.sum()),
+        len(ordered_syms),
+    )
 
-    for sym, lob_sym in lob_all.groupby(sym_col, sort=False):
-        if sym not in ranges:
-            continue
-        lo, hi = ranges[sym]
-        sym_dates = dates_map[sym]
-        date_to_local = {d: k for k, d in enumerate(sym_dates)}
-        lob_sym = lob_sym.sort_values(["date", time_col])
+    # ── Pass 2 (LOB, large): streamed OFI features → feat[:, :N_OFI] ────────
+    # Raw slot-OFI is accumulated for both periods first, then z-scored per
+    # asset over the concatenated series (causal, so out-of-sample days never
+    # inform in-sample ones).
+    ofi_block = feat[:, :N_OFI]
+    for key in ("lob", "lob_oos"):
+        _stream_ofi_into(paths[key], config, ofi_block, sym_to_idx, day_to_idx, row_of)
 
-        block = np.zeros((len(sym_dates), n_lob_feat), dtype=np.float32)
-        for d, day_lob in lob_sym.groupby("date", sort=False):
-            k = date_to_local.get(d)
-            if k is None or len(day_lob) == 0:
-                continue
-            day_lob = day_lob.reset_index(drop=True)
-            ofi_df = compute_ofi_tick(day_lob)
-            block[k] = snap_to_slots(ofi_df, day_lob).reshape(-1)  # (240,)
-
-        block = causal_rolling_zscore(block)
-        feat[lo:hi, :n_lob_feat] = np.clip(block, -CLIP_VAL, CLIP_VAL)
-    del lob_all
-
-    # ── Pass 3: cross-sectional z-score of OHLCV per day → feat[:, n_lob:] ───
-    # Group global rows by their calendar day across all assets.
-    day_to_rows: dict[str, list[int]] = {}
     for sym in ordered_syms:
-        lo, _ = ranges[sym]
-        for k, d in enumerate(dates_map[sym]):
-            day_to_rows.setdefault(d, []).append(lo + k)
+        lo, hi = ranges[sym]
+        normed = causal_rolling_zscore(ofi_block[lo:hi])
+        ofi_block[lo:hi] = np.clip(normed, -CLIP_VAL, CLIP_VAL)
 
-    for d, rows in day_to_rows.items():
-        idx = np.asarray(rows, dtype=np.int64)
+    # ── Pass 3: cross-sectional z-score of OHLCV per day → feat[:, N_OFI:] ──
+    for d in range(len(all_days)):
+        idx = row_of[:, d]
+        idx = idx[idx >= 0]
+        if len(idx) == 0:
+            continue
         mat = ohlcv_block[idx].astype(np.float64)
         mu = np.nanmean(mat, axis=0)
         sigma = np.nanstd(mat, axis=0)
         sigma = np.where(~np.isfinite(sigma) | (sigma < 1e-8), 1.0, sigma)
         normed = ((mat - mu) / sigma).astype(np.float32)
-        feat[idx, n_lob_feat:] = np.clip(normed, -CLIP_VAL, CLIP_VAL)
+        feat[idx, N_OFI:] = np.clip(normed, -CLIP_VAL, CLIP_VAL)
 
     del ohlcv_block
 
     # final safety net: no non-finite values ever reach the model
     np.nan_to_num(feat, copy=False, nan=0.0, posinf=CLIP_VAL, neginf=-CLIP_VAL)
     logger.info("feishu features built (in RAM): {:,} rows × {} feat", n_rows, nf)
-    return feat, row_labels, row_asset, nf, ordered_syms
+    return feat, row_labels, row_asset, row_oos, nf, ordered_syms
 
 
 # ── dataset factory ──────────────────────────────────────────────────────────
@@ -274,34 +447,63 @@ def build_datasets(
 ) -> tuple[LOBDataset, LOBDataset, LOBDataset, dict]:
     """Return ``(train_ds, val_ds, test_ds, meta)`` over the in-RAM feature matrix.
 
-    Windows are computed per asset (causal label, no straddling), then split
-    70 / 15 / 15 chronologically within each asset.  Features are built fresh
-    in RAM each call — no disk cache.
+    Windows are computed per asset (causal label, no straddling) and assigned by
+    the period of their **label day**:
+
+      * out-of-sample label day        → test   (final, untouched metrics)
+      * in-sample, first ``train_frac``→ train  (fit)
+      * in-sample, last ``1-train_frac``→ val   (model selection only)
+
+    The in-sample train/val cut is **chronological per asset** (default 80/20,
+    override with ``config['train_frac']``): every val window's label day comes
+    strictly after every train window's, within an asset.
+
+    No train/val preprocessing leakage
+    ----------------------------------
+    Selection on ``val`` is only trustworthy if no val information reached the
+    features the model was trained on.  Every normalisation here is
+    point-in-time — the OFI z-score is causal (a day's stats use strictly
+    *earlier* days) and the OHLCV z-score is cross-sectional within a single day
+    — so no train-period feature depends on any val (or out-of-sample) day.  The
+    chronological cut then guarantees no val label is ever a training target.
+
+    A val window's *look-back* does reach into the train period, but that is not
+    leakage: it is exactly the situation at test time (each out-of-sample window
+    looks back into in-sample), so val faithfully mimics the test condition
+    rather than being purged into a different regime.
+
+    Each ``__getitem__`` returns ``{"x":…, "label":…, "asset": int}``, where
+    ``asset`` indexes ``meta["symbols"]`` — models that condition on asset
+    identity (e.g. JointDiffCFG) can use it, others ignore it.
     """
     T = config["T_past"]
-    feat, row_labels, row_asset, nf, _ordered_syms = _build_feature_matrix(
+    train_frac = float(config.get("train_frac", _INSAMPLE_TRAIN_FRAC))
+    feat, row_labels, row_asset, row_oos, nf, ordered_syms = _build_feature_matrix(
         config, data_dir, symbols
     )
 
-    train_starts: list[int] = []
-    val_starts: list[int] = []
-    test_starts: list[int] = []
-
+    train_parts: list[np.ndarray] = []
+    val_parts: list[np.ndarray] = []
+    test_parts: list[np.ndarray] = []
     for lo, hi in _asset_ranges(row_asset):
-        # valid starts: window [s, s+T) within asset, causal label row_labels[s+T] valid
-        asset_starts = [s for s in range(lo, hi - T) if row_labels[s + T] >= 0]
-        if not asset_starts:
+        starts = np.arange(lo, max(lo, hi - T), dtype=np.int64)
+        if len(starts) == 0:
             continue
-        n = len(asset_starts)
-        n_train = int(_TRAIN_FRAC * n)
-        n_val = int(_VAL_CUM * n)
-        train_starts.extend(asset_starts[:n_train])
-        val_starts.extend(asset_starts[n_train:n_val])
-        test_starts.extend(asset_starts[n_val:])
+        # `starts` is ascending → chronological (days are in date order).
+        valid = row_labels[starts + T] >= 0
+        starts = starts[valid]
+        oos = row_oos[starts + T]
+        test_parts.append(starts[oos])
 
-    train_arr = np.asarray(train_starts, dtype=np.int64)
-    val_arr = np.asarray(val_starts, dtype=np.int64)
-    test_arr = np.asarray(test_starts, dtype=np.int64)
+        insample = starts[~oos]  # still chronological
+        n_train = int(train_frac * len(insample))
+        train_parts.append(insample[:n_train])
+        val_parts.append(insample[n_train:])
+
+    empty = np.empty(0, dtype=np.int64)
+    train_arr = np.concatenate(train_parts) if train_parts else empty
+    val_arr = np.concatenate(val_parts) if val_parts else empty
+    test_arr = np.concatenate(test_parts) if test_parts else empty
 
     def _balance(starts: np.ndarray) -> dict:
         if len(starts) == 0:
@@ -316,81 +518,22 @@ def build_datasets(
             "val": len(val_arr),
             "test": len(test_arr),
         },
+        "train_frac": train_frac,
         "class_balance": _balance(train_arr),
-        "n_features": nf,
-        "n_rows": len(row_asset),
-    }
-    logger.info(
-        "windows — train:{} val:{} test:{}",
-        meta["counts"]["train"],
-        meta["counts"]["val"],
-        meta["counts"]["test"],
-    )
-
-    train_ds = LOBDataset(feat, train_arr, row_labels, T)
-    val_ds = LOBDataset(feat, val_arr, row_labels, T)
-    test_ds = LOBDataset(feat, test_arr, row_labels, T)
-    return train_ds, val_ds, test_ds, meta
-
-
-def build_datasets_multi(
-    config: dict,
-    data_dir: str | Path,
-    symbols: list[str],
-) -> tuple[LOBDataset, LOBDataset, LOBDataset, dict]:
-    """Like :func:`build_datasets` but exposes asset ids in each batch item.
-
-    Each ``__getitem__`` returns ``{"x":…, "label":…, "asset": int}``, where
-    ``asset`` is the integer index into ``ordered_syms``.  Use this for any
-    model that conditions on asset identity (e.g. JointDiffCFG).
-
-    Extra ``meta`` keys vs. :func:`build_datasets`:
-        ``n_assets``  — number of distinct assets.
-        ``symbols``   — ordered list of symbol strings.
-    """
-    T = config["T_past"]
-    feat, row_labels, row_asset, nf, ordered_syms = _build_feature_matrix(
-        config, data_dir, symbols
-    )
-
-    train_starts: list[int] = []
-    val_starts: list[int] = []
-    test_starts: list[int] = []
-
-    for lo, hi in _asset_ranges(row_asset):
-        asset_starts = [s for s in range(lo, hi - T) if row_labels[s + T] >= 0]
-        if not asset_starts:
-            continue
-        n = len(asset_starts)
-        n_train = int(_TRAIN_FRAC * n)
-        n_val = int(_VAL_CUM * n)
-        train_starts.extend(asset_starts[:n_train])
-        val_starts.extend(asset_starts[n_train:n_val])
-        test_starts.extend(asset_starts[n_val:])
-
-    train_arr = np.asarray(train_starts, dtype=np.int64)
-    val_arr = np.asarray(val_starts, dtype=np.int64)
-    test_arr = np.asarray(test_starts, dtype=np.int64)
-
-    def _balance(starts: np.ndarray) -> dict:
-        if len(starts) == 0:
-            return {"down": 0.0, "stationary": 0.0, "up": 0.0}
-        lbl = row_labels[starts + T]
-        c = np.bincount(lbl, minlength=3) / len(lbl)
-        return {"down": float(c[0]), "stationary": float(c[1]), "up": float(c[2])}
-
-    meta = {
-        "counts": {"train": len(train_arr), "val": len(val_arr), "test": len(test_arr)},
-        "class_balance": _balance(train_arr),
+        "val_class_balance": _balance(val_arr),
+        "test_class_balance": _balance(test_arr),
         "n_features": nf,
         "n_rows": len(row_asset),
         "n_assets": len(ordered_syms),
         "symbols": ordered_syms,
     }
     logger.info(
-        "multi windows — train:{} val:{} test:{} n_assets:{}",
+        "windows — train:{} val:{} (in-sample {:.0%}/{:.0%}) test:{} (out-of-sample) "
+        "n_assets:{}",
         meta["counts"]["train"],
         meta["counts"]["val"],
+        train_frac,
+        1 - train_frac,
         meta["counts"]["test"],
         meta["n_assets"],
     )

@@ -47,6 +47,8 @@ Each run writes `best.pt`, `config.json` and `training_log.json` to a timestampe
 | **TLOB**     | Temporal-LOB transformer (alternating temporal/spatial attention) | [tlob.md](tlob.md) |
 | **DLA**      | Dual-Stage Temporal Attention (DA-RNN) | [dla.md](dla.md) |
 | **Axial-LOB**| Axial-attention over the LOB image | [axiallob.md](axiallob.md) |
+| **LogReg**   | Linear floor — flatten window, single affine layer to 3 logits | [logreg.md](logreg.md) |
+| **LinVAR**   | Linear-recurrent VAR-style state + softmax readout, trained on labels | [linvar.md](linvar.md) |
 
 ### Joint generative–discriminative
 

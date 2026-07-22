@@ -213,7 +213,10 @@ def main() -> None:
     train_ds, val_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
     cb = meta["class_balance"]
     logger.info(
-        "  windows  train={}  val={}  test={}", len(train_ds), len(val_ds), len(test_ds)
+        "  windows  train={}  val={}  test(out-of-sample)={}",
+        len(train_ds),
+        len(val_ds),
+        len(test_ds),
     )
     logger.info(
         "  label_alpha={:.6f}  down={:.1%} stat={:.1%} up={:.1%}",
@@ -266,7 +269,7 @@ def main() -> None:
     )
     lr_sched = build_cosine_schedule(optimizer, config, epochs * len(train_loader))
 
-    best, patience, history = float("-inf"), 0, []
+    best, history = float("-inf"), []
     for epoch in range(epochs):
         tr = _train_epoch(
             model, diff, train_loader, optimizer, lr_sched, config, device, do_diff
@@ -295,8 +298,9 @@ def main() -> None:
         )
         history.append(row)
 
+        # model selection on the held-out in-sample val slice (highest macro-F1)
         if val_f1 > best:
-            best, patience = val_f1, 0
+            best = val_f1
             torch.save(
                 {
                     "model": model.state_dict(),
@@ -306,11 +310,6 @@ def main() -> None:
                 },
                 ckpt_dir / "best.pt",
             )
-        else:
-            patience += 1
-            if patience >= config["patience"]:
-                logger.info("early stopping at epoch {}", epoch)
-                break
 
     (ckpt_dir / "config.json").write_text(json.dumps(config, indent=2))
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
@@ -319,7 +318,11 @@ def main() -> None:
     metrics = run_test(model, test_ds, config, device)
     report = _per_class_report(model, test_ds, config, device)
     (ckpt_dir / "metrics.json").write_text(
-        json.dumps({"test": metrics, "per_class": report}, indent=2, default=str)
+        json.dumps(
+            {"out_of_sample": metrics, "per_class": report},
+            indent=2,
+            default=str,
+        )
     )
 
 

@@ -110,7 +110,10 @@ def main() -> None:
     train_ds, val_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
     cb = meta["class_balance"]
     logger.info(
-        "  windows  train={}  val={}  test={}", len(train_ds), len(val_ds), len(test_ds)
+        "  windows  train={}  val={}  test(out-of-sample)={}",
+        len(train_ds),
+        len(val_ds),
+        len(test_ds),
     )
     logger.info(
         "  train balance  down={:.1%} stat={:.1%} up={:.1%}",
@@ -139,14 +142,14 @@ def main() -> None:
         optimizer, config, config["epochs"] * len(train_loader)
     )
 
-    best, patience, history = float("inf"), 0, []
+    best, history = float("inf"), []
     for epoch in range(config["epochs"]):
         tr_ce = _train_epoch(
             model, train_loader, optimizer, scheduler, device, grad_clip
         )
         val_ce, val_acc = _validate(model, val_loader, device)
         logger.info(
-            "epoch {} | tr={:.4f} val_ce={:.4f} val_acc={:.4f}",
+            "epoch {} | train_ce={:.4f} val_ce={:.4f} val_acc={:.4f}",
             epoch,
             tr_ce,
             val_ce,
@@ -156,23 +159,22 @@ def main() -> None:
             {"epoch": epoch, "train_ce": tr_ce, "val_ce": val_ce, "val_acc": val_acc}
         )
 
+        # model selection on the held-out in-sample val slice (lowest val CE)
         if val_ce < best:
-            best, patience = val_ce, 0
+            best = val_ce
             torch.save(
                 {"model": model.state_dict(), "config": config, "epoch": epoch},
                 ckpt_dir / "best.pt",
             )
-        else:
-            patience += 1
-            if patience >= config["patience"]:
-                logger.info("early stopping at epoch {}", epoch)
-                break
 
     (ckpt_dir / "config.json").write_text(json.dumps(config, indent=2))
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
     ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
-    run_test(model, test_ds, config, device)
+    metrics = run_test(model, test_ds, config, device)
+    (ckpt_dir / "metrics.json").write_text(
+        json.dumps({"out_of_sample": metrics}, indent=2, default=str)
+    )
 
 
 if __name__ == "__main__":
