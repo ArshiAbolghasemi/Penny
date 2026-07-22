@@ -10,6 +10,7 @@
   "train_frac": 0.7,
   "val_frac": 0.15,
   "ofsatnet_levels": 10,
+  "ofsatnet_level_slots": 24,
   "ofsatnet_dim": 64,
   "ofsatnet_heads": 4,
   "ofsatnet_layers": 2,
