@@ -1,1 +1,7 @@
-*.ipynb linguist-language=Python
+# Treat notebooks as documentation
+notebooks/**/*.ipynb linguist-documentation
+
+# Exclude generated and data directories
+data/** linguist-detectable=false
+outputs/** linguist-detectable=false
+checkpoints/** linguist-detectable=false
