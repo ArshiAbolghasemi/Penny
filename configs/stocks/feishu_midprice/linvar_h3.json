@@ -1,0 +1,28 @@
+{
+  "data_dir": "data/stocks/feishu",
+  "lob_file": "lob_data_in_sample.parquet",
+  "daily_file": "daily_data_in_sample.parquet",
+  "lob_file_oos": "lob_data_release_stage_out_of_sample.parquet",
+  "daily_file_oos": "daily_data_release_stage_out_of_sample.parquet",
+  "checkpoint_dir": "checkpoints/stocks/feishu_midprice/linvar/h3",
+  "n_lob_levels": 10,
+  "feature_mode": "ofi",
+  "T_past": 50,
+  "horizon": 3,
+  "mid_ref_time": null,
+  "label_mode": "quantile",
+  "class_quantiles": [
+    0.3333,
+    0.6667
+  ],
+  "train_frac": 0.8,
+  "linvar_hidden": 32,
+  "batch_size": 256,
+  "lr": 0.0001,
+  "weight_decay": 1e-05,
+  "warmup_steps": 500,
+  "grad_clip": 1.0,
+  "epochs": 30,
+  "device": "cuda",
+  "seed": 42
+}
