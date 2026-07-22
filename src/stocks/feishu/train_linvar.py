@@ -53,6 +53,19 @@ def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
     return total / max(n, 1)
 
 
+@torch.no_grad()
+def _validate(model, loader, device):
+    model.eval()
+    ce, correct, n = 0.0, 0, 0
+    for batch in loader:
+        label = batch["label"].to(device)
+        logits = model.predict(batch, device)
+        ce += F.cross_entropy(logits, label).item()
+        correct += (logits.argmax(1) == label).sum().item()
+        n += len(label)
+    return ce / max(len(loader), 1), correct / max(n, 1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -94,11 +107,12 @@ def main() -> None:
         "  params={:.2f}M  device={}", count_parameters(LinVAR(config)) / 1e6, device
     )
 
-    train_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
+    train_ds, val_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
     cb = meta["class_balance"]
     logger.info(
-        "  windows  in-sample(train)={}  out-of-sample(test)={}",
+        "  windows  train={}  val={}  test(out-of-sample)={}",
         len(train_ds),
+        len(val_ds),
         len(test_ds),
     )
     logger.info(
@@ -119,6 +133,7 @@ def main() -> None:
         worker_init_fn=seed_worker,
         generator=generator,
     )
+    val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
 
     optimizer = AdamW(
         model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
@@ -132,11 +147,21 @@ def main() -> None:
         tr_ce = _train_epoch(
             model, train_loader, optimizer, scheduler, device, grad_clip
         )
-        logger.info("epoch {} | train_ce={:.4f}", epoch, tr_ce)
-        history.append({"epoch": epoch, "train_ce": tr_ce})
+        val_ce, val_acc = _validate(model, val_loader, device)
+        logger.info(
+            "epoch {} | train_ce={:.4f} val_ce={:.4f} val_acc={:.4f}",
+            epoch,
+            tr_ce,
+            val_ce,
+            val_acc,
+        )
+        history.append(
+            {"epoch": epoch, "train_ce": tr_ce, "val_ce": val_ce, "val_acc": val_acc}
+        )
 
-        if tr_ce < best:
-            best = tr_ce
+        # model selection on the held-out in-sample val slice (lowest val CE)
+        if val_ce < best:
+            best = val_ce
             torch.save(
                 {"model": model.state_dict(), "config": config, "epoch": epoch},
                 ckpt_dir / "best.pt",

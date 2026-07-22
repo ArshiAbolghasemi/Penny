@@ -2,23 +2,27 @@
 
 Train / eval protocol
 ---------------------
-There is **no internal split**.  The model trains on *every* in-sample window
-and is then evaluated once on the held-out out-of-sample period:
+Three splits, assigned by each window's **label day**:
 
-    train : in-sample file          (D001 … D484)
-    test  : out-of-sample file      (D485 … D726)
+    train : in-sample, first 80%    (D001 … ~D387)   — fit
+    val   : in-sample, last 20%     (~D388 … D484)   — model selection
+    test  : out-of-sample file      (D485 … D726)    — final metrics
 
-Both periods are built into a single contiguous per-asset feature matrix so
-that windows and rolling statistics carry across the boundary — the first
-``T_past`` out-of-sample days are evaluable because their look-back window
-reaches back into the in-sample tail.  A window is assigned to *test* iff its
-**label day** falls in the out-of-sample period, so nothing that a training
-label depends on is ever an out-of-sample prediction target.
+The 80/20 in-sample cut is chronological *per asset* (override with
+``config['train_frac']``); the model is checkpointed on its best val metric and
+scored once on the untouched out-of-sample test set.
+
+All three are built into a single contiguous per-asset feature matrix so that
+windows and rolling statistics carry across the boundaries — the first
+``T_past`` out-of-sample days are evaluable because their look-back reaches back
+into the in-sample tail.  A window is assigned by its label day, so nothing a
+training label depends on is ever a val or test prediction target.
 
 Every normalisation is point-in-time: the OFI rolling z-score is causal
-(past days only) and the OHLCV z-score is cross-sectional within a single day.
-Computing them over the concatenated series therefore leaks no future
-information into the training windows.
+(strictly earlier days only) and the OHLCV z-score is cross-sectional within a
+single day.  Computing them over the concatenated series therefore leaks no
+future information into the training windows — no train-period feature depends
+on any val or out-of-sample day, so val is a trustworthy selection signal.
 
 Memory model
 ------------
@@ -67,7 +71,7 @@ morning vwap of day t+1 (the entry price), so there is zero leakage.
 Public API
 ----------
 - discover_symbols(data_dir, config) → sorted symbols across both periods
-- build_datasets(config, data_dir, symbols) → (train_ds, test_ds, meta)
+- build_datasets(config, data_dir, symbols) → (train_ds, val_ds, test_ds, meta)
 """
 
 from __future__ import annotations
@@ -104,6 +108,10 @@ _TIME_COL = "time"
 # keeps a partition around 1.6M rows (~0.5 GB) — small enough to hold twice
 # (partition + carry-over buffer) on any training node.
 _ROW_GROUPS_PER_CHUNK = 8
+
+# In-sample chronological train/val cut: first 80% of each asset's in-sample
+# windows fit the model, the last 20% select it. Override with config["train_frac"].
+_INSAMPLE_TRAIN_FRAC = 0.80
 
 
 def _paths(data_dir: str | Path, config: dict) -> dict[str, Path]:
@@ -436,35 +444,65 @@ def build_datasets(
     config: dict,
     data_dir: str | Path,
     symbols: list[str],
-) -> tuple[LOBDataset, LOBDataset, dict]:
-    """Return ``(train_ds, test_ds, meta)`` over the in-RAM feature matrix.
+) -> tuple[LOBDataset, LOBDataset, LOBDataset, dict]:
+    """Return ``(train_ds, val_ds, test_ds, meta)`` over the in-RAM feature matrix.
 
     Windows are computed per asset (causal label, no straddling) and assigned by
-    the period of their **label day**: in-sample → train, out-of-sample → test.
-    There is no validation split; the model trains on the whole in-sample set.
+    the period of their **label day**:
+
+      * out-of-sample label day        → test   (final, untouched metrics)
+      * in-sample, first ``train_frac``→ train  (fit)
+      * in-sample, last ``1-train_frac``→ val   (model selection only)
+
+    The in-sample train/val cut is **chronological per asset** (default 80/20,
+    override with ``config['train_frac']``): every val window's label day comes
+    strictly after every train window's, within an asset.
+
+    No train/val preprocessing leakage
+    ----------------------------------
+    Selection on ``val`` is only trustworthy if no val information reached the
+    features the model was trained on.  Every normalisation here is
+    point-in-time — the OFI z-score is causal (a day's stats use strictly
+    *earlier* days) and the OHLCV z-score is cross-sectional within a single day
+    — so no train-period feature depends on any val (or out-of-sample) day.  The
+    chronological cut then guarantees no val label is ever a training target.
+
+    A val window's *look-back* does reach into the train period, but that is not
+    leakage: it is exactly the situation at test time (each out-of-sample window
+    looks back into in-sample), so val faithfully mimics the test condition
+    rather than being purged into a different regime.
 
     Each ``__getitem__`` returns ``{"x":…, "label":…, "asset": int}``, where
     ``asset`` indexes ``meta["symbols"]`` — models that condition on asset
     identity (e.g. JointDiffCFG) can use it, others ignore it.
     """
     T = config["T_past"]
+    train_frac = float(config.get("train_frac", _INSAMPLE_TRAIN_FRAC))
     feat, row_labels, row_asset, row_oos, nf, ordered_syms = _build_feature_matrix(
         config, data_dir, symbols
     )
 
     train_parts: list[np.ndarray] = []
+    val_parts: list[np.ndarray] = []
     test_parts: list[np.ndarray] = []
     for lo, hi in _asset_ranges(row_asset):
         starts = np.arange(lo, max(lo, hi - T), dtype=np.int64)
         if len(starts) == 0:
             continue
+        # `starts` is ascending → chronological (days are in date order).
         valid = row_labels[starts + T] >= 0
+        starts = starts[valid]
         oos = row_oos[starts + T]
-        train_parts.append(starts[valid & ~oos])
-        test_parts.append(starts[valid & oos])
+        test_parts.append(starts[oos])
+
+        insample = starts[~oos]  # still chronological
+        n_train = int(train_frac * len(insample))
+        train_parts.append(insample[:n_train])
+        val_parts.append(insample[n_train:])
 
     empty = np.empty(0, dtype=np.int64)
     train_arr = np.concatenate(train_parts) if train_parts else empty
+    val_arr = np.concatenate(val_parts) if val_parts else empty
     test_arr = np.concatenate(test_parts) if test_parts else empty
 
     def _balance(starts: np.ndarray) -> dict:
@@ -475,8 +513,14 @@ def build_datasets(
         return {"down": float(c[0]), "stationary": float(c[1]), "up": float(c[2])}
 
     meta = {
-        "counts": {"train": len(train_arr), "test": len(test_arr)},
+        "counts": {
+            "train": len(train_arr),
+            "val": len(val_arr),
+            "test": len(test_arr),
+        },
+        "train_frac": train_frac,
         "class_balance": _balance(train_arr),
+        "val_class_balance": _balance(val_arr),
         "test_class_balance": _balance(test_arr),
         "n_features": nf,
         "n_rows": len(row_asset),
@@ -484,12 +528,17 @@ def build_datasets(
         "symbols": ordered_syms,
     }
     logger.info(
-        "windows — train(in-sample):{} test(out-of-sample):{} n_assets:{}",
+        "windows — train:{} val:{} (in-sample {:.0%}/{:.0%}) test:{} (out-of-sample) "
+        "n_assets:{}",
         meta["counts"]["train"],
+        meta["counts"]["val"],
+        train_frac,
+        1 - train_frac,
         meta["counts"]["test"],
         meta["n_assets"],
     )
 
     train_ds = LOBDataset(feat, train_arr, row_labels, T, row_asset=row_asset)
+    val_ds = LOBDataset(feat, val_arr, row_labels, T, row_asset=row_asset)
     test_ds = LOBDataset(feat, test_arr, row_labels, T, row_asset=row_asset)
-    return train_ds, test_ds, meta
+    return train_ds, val_ds, test_ds, meta

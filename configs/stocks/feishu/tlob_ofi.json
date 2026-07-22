@@ -9,6 +9,7 @@
   "feature_mode": "ofi",
   "T_past": 50,
   "alpha": 0.015,
+  "train_frac": 0.8,
   "tlob_dim": 64,
   "tlob_n_blocks": 4,
   "tlob_n_heads": 1,
@@ -17,7 +18,7 @@
   "weight_decay": 1e-05,
   "warmup_steps": 500,
   "grad_clip": 1.0,
-  "epochs": 80,
+  "epochs": 30,
   "device": "cuda",
   "seed": 42
 }

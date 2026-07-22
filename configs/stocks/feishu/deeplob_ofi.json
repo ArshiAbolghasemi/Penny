@@ -9,6 +9,7 @@
   "feature_mode": "ofi",
   "T_past": 50,
   "alpha": 0.015,
+  "train_frac": 0.8,
   "deeplob_conv_filters": 32,
   "deeplob_inception_filters": 64,
   "deeplob_lstm_hidden": 64,
@@ -18,7 +19,7 @@
   "weight_decay": 1e-05,
   "warmup_steps": 500,
   "grad_clip": 1.0,
-  "epochs": 80,
+  "epochs": 30,
   "device": "cuda",
   "seed": 42
 }

@@ -300,11 +300,12 @@ def main() -> None:
         len(symbols),
     )
 
-    train_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
+    train_ds, val_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
     cb = meta["class_balance"]
     logger.info(
-        "  windows  in-sample(train)={}  out-of-sample(test)={}",
+        "  windows  train={}  val={}  test(out-of-sample)={}",
         len(train_ds),
+        len(val_ds),
         len(test_ds),
     )
     logger.info(
@@ -338,10 +339,8 @@ def main() -> None:
         worker_init_fn=seed_worker,
         generator=generator,
     )
-    # No validation split — the model trains on every in-sample window. Epoch
-    # diagnostics are therefore in-sample, measured on a capped random slice of
-    # the (shuffled) training loader to keep them cheap.
-    eval_batches = max(1, len(train_loader) // 10)
+    val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False)
+    train_eval_batches = max(1, len(val_loader))
 
     epochs = config["epochs"]
     do_diff = not args.baseline
@@ -352,38 +351,42 @@ def main() -> None:
     )
     lr_sched = build_cosine_schedule(optimizer, config, epochs * len(train_loader))
 
-    best, history = float("inf"), []
+    best, history = float("-inf"), []
     for epoch in range(epochs):
         tr = _train_epoch(
             model, fp, low_t, train_loader, optimizer, lr_sched, config, device, do_diff
         )
-        train_f1, train_ce, train_acc = _f1_ce_acc(
-            model, train_loader, device, eval_batches
-        )
-        noisy_f1 = _noisy_f1(model, fp, low_t, train_loader, device, eval_batches)
+        val_f1, val_ce, val_acc = _f1_ce_acc(model, val_loader, device)
+        train_f1, _, _ = _f1_ce_acc(model, train_loader, device, train_eval_batches)
+        noisy_f1 = _noisy_f1(model, fp, low_t, val_loader, device)
         row = {
             "epoch": epoch,
             **tr,
+            "val_f1": val_f1,
+            "val_ce": val_ce,
+            "val_acc": val_acc,
             "train_f1": train_f1,
-            "train_ce": train_ce,
-            "train_acc": train_acc,
-            "noisy_train_f1": noisy_f1,
+            "f1_gap": train_f1 - val_f1,
+            "noisy_val_f1": noisy_f1,
         }
         logger.info(
             "ep {} | cls={:.4f} score={:.4f} robust={:.4f}"
-            " | train_f1={:.4f} acc={:.4f} noisy_f1={:.4f}",
+            " | val_f1={:.4f} acc={:.4f} noisy_f1={:.4f} | train_f1={:.4f} gap={:+.4f}",
             epoch,
             tr["cls"],
             tr["score"],
             tr["robust"],
-            train_f1,
-            train_acc,
+            val_f1,
+            val_acc,
             noisy_f1,
+            train_f1,
+            train_f1 - val_f1,
         )
         history.append(row)
 
-        if tr["cls"] < best:
-            best = tr["cls"]
+        # model selection on the held-out in-sample val slice (highest macro-F1)
+        if val_f1 > best:
+            best = val_f1
             torch.save(
                 {
                     "model": model.state_dict(),
