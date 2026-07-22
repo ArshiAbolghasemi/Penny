@@ -129,7 +129,7 @@ Per-topic files:
   [BiN-CTABL](docs/models/binctabl.md) · [TLOB](docs/models/tlob.md) ·
   [DLA](docs/models/dla.md) · [Axial-LOB](docs/models/axiallob.md) ·
   [JointDiT](docs/models/jointdit.md) · [JumpGateLOB](docs/models/jumpgatelob.md) ·
-  [AlphaStableLOB](docs/models/alphastablelob.md)
+  [AlphaStableLOB](docs/models/alphastablelob.md) . [OFSAT-NET](docs/models/ofsatnet.md)
 - XAI: [attribution](docs/xai/attribution.md) · [faithfulness](docs/xai/faithfulness.md) ·
   [probes](docs/xai/probes.md) · [CKA](docs/xai/cka.md) ·
   [agreement](docs/xai/agreement.md) · [gate sweep](docs/xai/gate-sweep.md) ·
