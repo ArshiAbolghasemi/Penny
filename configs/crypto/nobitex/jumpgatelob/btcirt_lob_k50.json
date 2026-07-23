@@ -52,7 +52,7 @@
   "jgl_attn_dropout": 0.1,
   "jgl_diff_channels": 16,
   "jgl_diff_blocks": 2,
-  "jgl_feat_mix": "mlp",
+  "jgl_feat_mix": "conv",
   "jgl_feat_heads": 2,
   "jgl_pad_mode": "reflect",
   "baranchuk_phase1_epochs": 40,

@@ -41,7 +41,7 @@
   "astable_attn_dropout": 0.1,
   "astable_diff_channels": 16,
   "astable_diff_blocks": 2,
-  "astable_feat_mix": "mlp",
+  "astable_feat_mix": "conv",
   "astable_feat_heads": 2,
   "astable_pad_mode": "reflect",
   "use_bin": false
