@@ -950,6 +950,45 @@ for tag in MODEL_REGISTRY:
 print(f"\nbacktested {len(PM)} models")
 
 
+def equal_weight_index(runnable_days, day_to_idx, valid_mask, prices, cfg):
+    """Passive benchmark: every day, hold ALL assets valid that day equally
+    weighted, using the same buy(vwap_entry)->sell(close) one-day economics
+    every model's signal implies (see PortfolioManager.step). No transaction
+    costs — a passive reference point, not an actively-managed strategy — so
+    total_costs/turnover are reported as zero (not omitted, so compute_metrics
+    and plot_report accept this daily_df identically to every model's)."""
+    value = float(cfg["initial_capital"])
+    rows = []
+    for day_id in runnable_days:
+        t = day_to_idx[day_id]
+        idxs = np.where(valid_mask[:, t])[0]
+        vwap = prices[idxs, t, 2]
+        close = prices[idxs, t, 1]
+        ok = np.isfinite(vwap) & np.isfinite(close) & (vwap > 0)
+        r = float(np.mean((close[ok] - vwap[ok]) / vwap[ok])) if ok.any() else 0.0
+        value *= 1 + r
+        rows.append(
+            {
+                "trade_day_id": day_id,
+                "portfolio_value": value,
+                "num_holdings": int(ok.sum()),
+                "buy_turnover": 0.0,
+                "sell_turnover": 0.0,
+                "total_costs": 0.0,
+            }
+        )
+    return pd.DataFrame(rows).set_index("trade_day_id")
+
+
+DAILY_DF["equal_weight_index"] = equal_weight_index(
+    runnable, day_to_idx, valid_mask, prices, CONFIG
+)
+print(
+    "equal_weight_index  final value: RMB "
+    f"{DAILY_DF['equal_weight_index']['portfolio_value'].iloc[-1] / 1e6:.2f}M"
+)
+
+
 def compute_metrics(daily_values, daily_df, cfg):
     daily_returns = daily_values.pct_change().dropna()
     T_years = max(len(daily_values) / cfg["trading_days_year"], 1e-9)
@@ -1247,13 +1286,6 @@ for tag, pm in PM.items():
     else:
         print(f"[{tag}] ✅ validation passed")
 
-    fname = (
-        PROJECT_ROOT
-        / "submissions"
-        / f"{CONFIG['team_id']}_oos_sell_{CONFIG['sell_mode']}_{tag}.csv"
-    )
-    sub_df.to_csv(fname, index=False)
-    print(f"[{tag}] trade log saved: {fname}")
     print(
         f"[{tag}] rows: {len(sub_df)}  days: {sub_df['trade_day_id'].nunique()}  "
         f"assets: {sub_df['asset_id'].nunique()}"
