@@ -1030,6 +1030,24 @@ print("\n=== model comparison (sorted by Sharpe) ===")
 summary
 
 
+def _plot_kde(ax, r, **kwargs):
+    """Overlay a Gaussian-KDE curve on `r`'s histogram, skipping gracefully when
+    the series has (near-)zero variance. A model that never trades (e.g. always
+    predicts FLAT) holds a constant portfolio value, so its daily_returns series
+    is exact zeros; gaussian_kde's covariance matrix is then singular and raises
+    LinAlgError. Skip the curve rather than crash the whole report."""
+    r = np.asarray(r, dtype=float)
+    r = r[np.isfinite(r)]
+    if len(r) < 2 or r.std() < 1e-10:
+        return
+    try:
+        kde = stats.gaussian_kde(r)
+    except np.linalg.LinAlgError:
+        return
+    kx = np.linspace(r.min(), r.max(), 200)
+    ax.plot(kx, kde(kx), **kwargs)
+
+
 def plot_report(tag, daily_df, metrics, cfg):
     fig, axes = plt.subplots(3, 2, figsize=(15, 12))
 
@@ -1044,9 +1062,7 @@ def plot_report(tag, daily_df, metrics, cfg):
     ax = axes[0, 1]
     r = metrics["daily_returns"]
     ax.hist(r, bins=50, density=True, alpha=0.7, color="steelblue", edgecolor="white")
-    if len(r) > 1:
-        kx = np.linspace(r.min(), r.max(), 200)
-        ax.plot(kx, stats.gaussian_kde(r)(kx), color="darkred", lw=1.5)
+    _plot_kde(ax, r, color="darkred", lw=1.5)
     ax.axvline(r.mean(), color="black", ls="--", alpha=0.7)
     ax.set_title("Daily Returns Distribution")
     ax.set_xlabel("daily return")
@@ -1153,6 +1169,48 @@ ax.legend(fontsize=8, ncol=2)
 ax.grid(alpha=0.3)
 plt.tight_layout()
 out_png = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison.png"
+plt.savefig(out_png, dpi=150, bbox_inches="tight")
+print(f"saved → {out_png}")
+plt.show()
+
+# cross-model comparison: cumulative return (%), all models overlaid — same
+# information as the portfolio-value plot above but normalised, so it reads
+# directly as "returns" rather than requiring a mental RMB->% conversion.
+fig, ax = plt.subplots(figsize=(11, 5))
+for tag, m in METRICS.items():
+    cum_ret = (1 + m["daily_returns"]).cumprod() - 1
+    ax.plot(range(len(cum_ret)), cum_ret.to_numpy() * 100, lw=1.3, label=tag)
+ax.axhline(0, color="gray", ls="--", alpha=0.6)
+ax.set_xlabel("OOS day idx")
+ax.set_ylabel("cumulative return (%)")
+ax.set_title("OOS cumulative return — all models")
+ax.legend(fontsize=8, ncol=2)
+ax.grid(alpha=0.3)
+plt.tight_layout()
+out_png = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison_returns.png"
+plt.savefig(out_png, dpi=150, bbox_inches="tight")
+print(f"saved → {out_png}")
+plt.show()
+
+# cross-model comparison: daily-return distributions, all models overlaid.
+# Step histograms (not filled/KDE) so 8 overlapping models stay readable and
+# a degenerate (never-trades) model just draws a flat line at 0 instead of
+# crashing anything.
+fig, ax = plt.subplots(figsize=(9, 5))
+cmap = plt.get_cmap("tab10")
+for i, (tag, m) in enumerate(METRICS.items()):
+    r = m["daily_returns"].to_numpy() * 100
+    ax.hist(
+        r, bins=40, density=True, histtype="step", lw=1.4, color=cmap(i % 10), label=tag
+    )
+ax.axvline(0, color="black", ls="--", alpha=0.4)
+ax.set_xlabel("daily return (%)")
+ax.set_ylabel("density")
+ax.set_title("OOS daily return distribution — all models")
+ax.legend(fontsize=8, ncol=2)
+ax.grid(alpha=0.3)
+plt.tight_layout()
+out_png = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison_return_dist.png"
 plt.savefig(out_png, dpi=150, bbox_inches="tight")
 print(f"saved → {out_png}")
 plt.show()
