@@ -28,7 +28,7 @@
   "jdl_pool_heads": 4,
   "diffusion_process": "levy",
   "schedule": "vp",
-  "levy_jump_rate": 1.0,
+  "levy_jump_rate": 4.267,
   "levy_gamma_shape": 1.0,
   "levy_gamma_scale": 1.0,
   "levy_table_num_r": 512,
