@@ -22,6 +22,20 @@ established **discriminative baselines** alongside the joint models for comparis
 See **[docs/models](docs/models/README.md)** for every model, **[docs/data](docs/data/README.md)**
 for the data pipeline, and **[docs/xai](docs/xai/README.md)** for the explainability layer.
 
+## Architecture and workflow
+
+![StochLOB architecture and workflow](docs/figures/architecture.png)
+
+StochLOB uses one shared LOB sequence encoder with two training roles. A normalized
+LOB window first follows the clean classifier path: feature normalization, temporal
+sequence encoding, attention-based aggregation, and a three-class trend head for
+`down / flat / up` prediction. During training, a second branch corrupts the same
+window with non-Gaussian noise and trains a score head to denoise it. The Levy
+variant uses compound-Poisson jump corruption; the alpha-stable variant uses clipped
+heavy-tailed scale-mixture corruption. At inference time the corruption sampler and
+score head are disabled, so prediction is a single clean-window forward pass through
+the classifier.
+
 ## Setup
 
 Requirements: **Python 3.10** and [`uv`](https://docs.astral.sh/uv/).
