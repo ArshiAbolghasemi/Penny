@@ -24,7 +24,7 @@ for the data pipeline, and **[docs/xai](docs/xai/README.md)** for the explainabi
 
 ## Architecture and workflow
 
-![StochLOB architecture and workflow](docs/figures/architecture.pdf)
+![StochLOB architecture and workflow](docs/figures/architecture.svg)
 
 StochLOB uses one shared LOB sequence encoder with two training roles. A normalized
 LOB window first follows the clean classifier path: feature normalization, temporal
