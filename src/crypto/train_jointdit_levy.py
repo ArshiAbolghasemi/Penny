@@ -31,7 +31,7 @@ window at t=0 (no un-patchify sampling loop needed for the trend label).
 
 Usage::
 
-    uv run python -m crypto.train_jointdit_levy configs/crypto/nobitex/jointditlevy/btcirt_ofi_k10.json
+    uv run python -m crypto.train_jointdit_levy configs/crypto/coinbase/jointditlevy/btcirt_ofi_k10.json
     uv run python -m crypto.train_jointdit_levy ... --process gaussian   # ablation
 """
 
@@ -203,7 +203,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/jointditlevy/btcirt_ofi_k10.json",
+        default="configs/crypto/coinbase/jointditlevy/btcirt_ofi_k10.json",
     )
     parser.add_argument(
         "--process",

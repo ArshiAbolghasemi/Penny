@@ -66,5 +66,5 @@ Supervised cross-entropy under the shared protocol. Note the two nested per-time
 loops make DLA the slowest baseline per epoch.
 
 ```bash
-uv run python -m crypto.train_dla configs/crypto/nobitex/dla/btcirt_ofi_k10.json
+uv run python -m crypto.train_dla configs/crypto/coinbase/dla/btcirt_ofi_k10.json
 ```

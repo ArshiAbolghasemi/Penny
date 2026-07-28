@@ -119,8 +119,8 @@ def build_cache(
     parquet = Path(config["data_dir"]) / f"{symbol}.parquet.gz"
     if not parquet.exists():
         script = (
-            "resample_nobitex.py"
-            if config.get("exchange") == "nobitex"
+            "resample_coinbase.py"
+            if config.get("exchange") == "coinbase"
             else "resample_binance.py"
         )
         raise FileNotFoundError(

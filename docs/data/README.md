@@ -1,19 +1,24 @@
 # Data
 
-Penny trains on **limit-order-book (LOB) snapshots** from two crypto exchanges and
-turns them into fixed-length windows with a 3-class trend label (`down / flat / up`).
-Everything downstream of the raw exchange dumps is deterministic and config-driven,
-so a run is fully reproducible from a single JSON file plus the DVC-tracked data.
+Penny trains on **limit-order-book (LOB) snapshots** from two crypto exchanges, plus
+a separate Chinese A-share equity dataset (Feishu), and turns them into fixed-length
+windows with a 3-class trend label (`down / flat / up`). Everything downstream of the
+raw dumps is deterministic and config-driven, so a run is fully reproducible from a
+single JSON file plus the DVC-tracked data.
 
 Raw market data is **not** in git — it is tracked by [DVC](https://dvc.org) on an
 S3-compatible remote. See [Getting the data](#getting-the-data) below.
+
+> The crypto pipeline (below) is shared across both exchanges. The equity dataset
+> has its own pipeline — in-RAM feature build, no resample/cache step — documented
+> separately in [feishu.md](feishu.md).
 
 ## The two exchanges
 
 | Exchange | Pairs | Levels kept | Bin size | Raw format doc |
 |----------|-------|-------------|----------|----------------|
 | Binance  | BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, ADAUSDT, AVAXUSDT, BNBUSDT, DOGEUSDT, USDCUSDT | 10 | configurable (0.25 s default) | [binance.md](binance.md) |
-| Nobitex (Iranian) | BTCIRT, USDTIRT | 20 | 10 s (already binned at source) | [nobitex.md](nobitex.md) |
+| Coinbase (Iranian) | BTCIRT, USDTIRT | 20 | 10 s (already binned at source) | [coinbase.md](coinbase.md) |
 
 Both exchanges are normalised to the **same intermediate parquet schema**, so all of
 the feature/label/windowing logic below is shared across them. IRT = Iranian Toman.
@@ -21,9 +26,9 @@ the feature/label/windowing logic below is shared across them. IRT = Iranian Tom
 ## Pipeline overview
 
 ```
-raw CSVs (per exchange)                      docs/data/binance.md · nobitex.md
+raw CSVs (per exchange)                      docs/data/binance.md · coinbase.md
         │  scripts/resample_binance.py
-        │  scripts/resample_nobitex.py
+        │  scripts/resample_coinbase.py
         ▼
 data/resampled/{exchange}/{SYMBOL}.parquet.gz     one row per time-bin, unified schema
         │  crypto/features.py   → raw feature matrix (per calendar day)
@@ -52,7 +57,7 @@ timestamp_utc, bin
 ```
 
 Exchange-specific details (raw filenames, column mapping, quirks) live in
-[binance.md](binance.md) and [nobitex.md](nobitex.md).
+[binance.md](binance.md) and [coinbase.md](coinbase.md).
 
 ### 2. Feature extraction — `crypto/features.py`
 Each bin row becomes a feature vector. Two mutually-exclusive **feature modes**
@@ -112,7 +117,7 @@ If you have raw exchange dumps but no resampled parquet yet, regenerate them:
 
 ```bash
 uv run python scripts/resample_binance.py --interval 10 --levels 10
-uv run python scripts/resample_nobitex.py --levels 20
+uv run python scripts/resample_coinbase.py --levels 20
 ```
 
 ## Reference
@@ -120,7 +125,8 @@ uv run python scripts/resample_nobitex.py --levels 20
 | File | Contents |
 |------|----------|
 | [binance.md](binance.md) | Binance raw CSV schema, resampling, symbols |
-| [nobitex.md](nobitex.md) | Nobitex raw CSV schema, resampling, symbols |
+| [coinbase.md](coinbase.md) | Coinbase raw CSV schema, resampling, symbols |
 | [features.md](features.md) | `ofi` / `lob` feature modes, full column layout |
 | [labels.md](labels.md) | Trend-label definition, `alpha` calibration |
 | [windows-and-normalization.md](windows-and-normalization.md) | Windows, splits, causal rolling z-score, caching |
+| [feishu.md](feishu.md) | Feishu A-share equity data — raw schema, in-RAM feature build, both label schemes |

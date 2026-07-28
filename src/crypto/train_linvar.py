@@ -7,7 +7,7 @@ CTABL, JumpGateLOB, etc. (unlike the per-point-refit ARIMA/VAR statistical basel
 
 Usage::
 
-    uv run python -m crypto.train_linvar configs/crypto/nobitex/linvar/btcirt_ofi_k10.json
+    uv run python -m crypto.train_linvar configs/crypto/coinbase/linvar/btcirt_ofi_k10.json
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def _validate(model, loader, device):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "config", nargs="?", default="configs/crypto/nobitex/linvar/btcirt_ofi_k10.json"
+        "config", nargs="?", default="configs/crypto/coinbase/linvar/btcirt_ofi_k10.json"
     )
     args = parser.parse_args()
 

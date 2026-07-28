@@ -114,7 +114,7 @@ no traceback. Because the full test split rarely justifies the cost, a random
 ## Running
 
 ```bash
-uv run python -m xai.run_ig checkpoints/nobitex/BTCIRT/ctabl_BTCIRT_ofi_k10
+uv run python -m xai.run_ig checkpoints/coinbase/BTCIRT/ctabl_BTCIRT_ofi_k10
 uv run python -m xai.run_ig <ckpt_dir> --baseline mean --n-windows 1024 --n-steps 128
 ```
 

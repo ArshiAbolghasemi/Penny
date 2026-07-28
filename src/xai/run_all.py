@@ -2,9 +2,9 @@
 
 Usage::
 
-    uv run python -m xai.run_all checkpoints/nobitex/BTCIRT
-    uv run python -m xai.run_all checkpoints/nobitex/BTCIRT --smoke
-    uv run python -m xai.run_all checkpoints/nobitex/BTCIRT \
+    uv run python -m xai.run_all checkpoints/coinbase/BTCIRT
+    uv run python -m xai.run_all checkpoints/coinbase/BTCIRT --smoke
+    uv run python -m xai.run_all checkpoints/coinbase/BTCIRT \
         --models ctabl_BTCIRT_ofi_k10 dla_BTCIRT_ofi_k10 \
                  jumpgatelob_levy_BTCIRT_ofi_k10 --out results/xai
 

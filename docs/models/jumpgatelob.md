@@ -119,7 +119,7 @@ Forward / losses: `diffusion_process` (`levy`/`gaussian`), `schedule`, `T_max`,
 ## Run
 
 ```bash
-uv run python -m crypto.train_jumpgatelob configs/crypto/nobitex/jumpgatelob/btcirt_ofi_k10.json
+uv run python -m crypto.train_jumpgatelob configs/crypto/coinbase/jumpgatelob/btcirt_ofi_k10.json
 uv run python -m crypto.train_jumpgatelob ... --process gaussian   # no-jump ablation
 uv run python -m crypto.train_jumpgatelob ... --baseline           # plain-classifier reference
 ```

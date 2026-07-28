@@ -7,7 +7,7 @@ own `config.json`, so a run reproduces from the checkpoint plus the DVC-tracked
 data alone.
 
 Scope is deliberately narrow: **JumpGateLOB, CTABL and DLA** on the
-nobitex/BTCIRT `k10` checkpoints. JointDiT and AlphaStableLOB are out of scope,
+coinbase/BTCIRT `k10` checkpoints. JointDiT and AlphaStableLOB are out of scope,
 and only the `k=10` horizon is covered — keeping the comparison honest matters
 more than breadth here. See [Scope](#scope) for why.
 
@@ -80,13 +80,13 @@ standalone. Full details in [run-all.md](run-all.md).
 
 ```bash
 # everything, over the three in-scope k10 checkpoints
-uv run python -m xai.run_all checkpoints/nobitex/BTCIRT
+uv run python -m xai.run_all checkpoints/coinbase/BTCIRT
 
 # prove the wiring in a couple of minutes on CPU (numbers are not reportable)
-uv run python -m xai.run_all checkpoints/nobitex/BTCIRT --smoke
+uv run python -m xai.run_all checkpoints/coinbase/BTCIRT --smoke
 
 # turn the collected artefacts into the paper's figures
-uv run python scripts/plot_xai.py checkpoints/nobitex/BTCIRT/xai_results \
+uv run python scripts/plot_xai.py checkpoints/coinbase/BTCIRT/xai_results \
     --outdir docs/xai/figures
 ```
 

@@ -3,7 +3,7 @@
 Usage::
 
     uv run python -m xai.run_gate_sweep \
-        checkpoints/nobitex/BTCIRT/jumpgatelob_levy_BTCIRT_ofi_k10
+        checkpoints/coinbase/BTCIRT/jumpgatelob_levy_BTCIRT_ofi_k10
 
 Sweeps ``t`` and reports (a) how hard the trunk's gates write into the residual
 stream on clean windows, and (b) accuracy on jump-noised windows at both the

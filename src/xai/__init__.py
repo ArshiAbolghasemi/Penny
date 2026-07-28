@@ -1,6 +1,6 @@
 """Explainability (XAI) layer for the Penny trend classifiers.
 
-Scope: JumpGateLOB, CTABL and DLA on the nobitex/BTCIRT ``k10`` checkpoints.
+Scope: JumpGateLOB, CTABL and DLA on the coinbase/BTCIRT ``k10`` checkpoints.
 
 Two complementary views, deliberately kept distinct:
 

@@ -65,5 +65,5 @@ token), runs MHA, projects back to `dim`, applies a post-norm residual, then a
 Supervised cross-entropy under the shared protocol.
 
 ```bash
-uv run python -m crypto.train_tlob configs/crypto/nobitex/tlob/btcirt_ofi_k10.json
+uv run python -m crypto.train_tlob configs/crypto/coinbase/tlob/btcirt_ofi_k10.json
 ```

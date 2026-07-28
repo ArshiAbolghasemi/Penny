@@ -112,7 +112,7 @@ Trunk: `astable_local` (`gru`/`conv`), `astable_gru_hidden`, `astable_gru_layers
 ## Run
 
 ```bash
-uv run python -m crypto.train_alphastablelob configs/crypto/nobitex/alphastablelob/btcirt_ofi_k10.json
+uv run python -m crypto.train_alphastablelob configs/crypto/coinbase/alphastablelob/btcirt_ofi_k10.json
 uv run python -m crypto.train_alphastablelob ... --alpha 1.5     # heavier tails
 uv run python -m crypto.train_alphastablelob ... --baseline      # plain-classifier reference
 ```

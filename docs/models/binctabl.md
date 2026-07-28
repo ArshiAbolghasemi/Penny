@@ -47,7 +47,7 @@ Same as [CTABL](ctabl.md#config-keys) (`ctabl_d1`, `ctabl_d2`, `ctabl_t2`,
 Supervised cross-entropy under the shared protocol.
 
 ```bash
-uv run python -m crypto.train_binctabl configs/crypto/nobitex/binctabl/btcirt_ofi_k10.json
+uv run python -m crypto.train_binctabl configs/crypto/coinbase/binctabl/btcirt_ofi_k10.json
 ```
 
 > The same `BiN` layer is reused as an input front-end in [TLOB](tlob.md) and

@@ -58,7 +58,7 @@ cosine LR, early stopping on validation cross-entropy (shared protocol, see
 [README](README.md#shared-training-protocol)).
 
 ```bash
-uv run python -m crypto.train_linvar configs/crypto/nobitex/linvar/btcirt_ofi_k10.json
+uv run python -m crypto.train_linvar configs/crypto/coinbase/linvar/btcirt_ofi_k10.json
 ```
 
 ## Why it's here

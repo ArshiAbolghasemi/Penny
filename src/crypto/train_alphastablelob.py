@@ -22,7 +22,7 @@ Modes:
 
 Usage::
 
-    uv run python -m crypto.train_alphastablelob configs/crypto/nobitex/alphastablelob/btcirt_ofi_k10.json
+    uv run python -m crypto.train_alphastablelob configs/crypto/coinbase/alphastablelob/btcirt_ofi_k10.json
     uv run python -m crypto.train_alphastablelob ... --alpha 1.5
     uv run python -m crypto.train_alphastablelob ... --baseline
 """
@@ -159,7 +159,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/alphastablelob/btcirt_ofi_k10.json",
+        default="configs/crypto/coinbase/alphastablelob/btcirt_ofi_k10.json",
     )
     parser.add_argument(
         "--alpha",

@@ -9,7 +9,7 @@ Package layout (clear separation of concerns):
     levy.backbone        — U-Net + timestep conditioning (FiLM / adaLN)
     levy.heads           — diffusion (score) head + multi-horizon trend heads
     levy.losses          — generalized-score MSE, Kendall-Gal uncertainty, PCGrad
-    levy.data            — synthetic LOB generator, Binance/Nobitex adapters,
+    levy.data            — synthetic LOB generator, Binance/Coinbase adapters,
                            windowing + per-horizon labels, Dataset interface
     levy.model           — assembles backbone + heads -> JointDiffusionLevy
     levy.train           — runnable training script (config-driven)

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "penny"
 version = "0.1.0"
-description = "LOB direction forecasting on crypto (Binance, Nobitex) and equity (Feishu A-share) data"
+description = "LOB direction forecasting on crypto (Binance, Coinbase) and equity (Feishu A-share) data"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

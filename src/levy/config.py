@@ -20,8 +20,8 @@ from typing import Any
 @dataclass
 class DataConfig:
     # source: "synthetic" for smoke tests, or a real exchange adapter
-    source: str = "synthetic"  # "synthetic" | "binance" | "nobitex"
-    symbol: str = "BTCUSDT"  # e.g. BTCUSDT (binance) / BTCIRT (nobitex)
+    source: str = "synthetic"  # "synthetic" | "binance" | "coinbase"
+    symbol: str = "BTCUSDT"  # e.g. BTCUSDT (binance) / BTCIRT (coinbase)
     data_dir: str = "data/resampled"  # parquet root for real adapters
     n_levels: int = 10  # LOB price levels per side
     seq_len: int = 100  # timesteps per window

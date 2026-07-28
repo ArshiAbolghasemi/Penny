@@ -60,5 +60,5 @@ flowchart TD
 Supervised cross-entropy under the shared protocol.
 
 ```bash
-uv run python -m crypto.train_axiallob configs/crypto/nobitex/axiallob/btcirt_ofi_k10.json
+uv run python -m crypto.train_axiallob configs/crypto/coinbase/axiallob/btcirt_ofi_k10.json
 ```

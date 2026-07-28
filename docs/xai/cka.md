@@ -55,7 +55,7 @@ means the heatmap is not a result. This travels with every reported matrix.
 ## Running
 
 ```bash
-uv run python -m xai.run_cka checkpoints/nobitex/BTCIRT \
+uv run python -m xai.run_cka checkpoints/coinbase/BTCIRT \
     --models ctabl_BTCIRT_ofi_k10 dla_BTCIRT_ofi_k10 jumpgatelob_levy_BTCIRT_ofi_k10 \
     --n-windows 2048 --n-splits 4
 ```

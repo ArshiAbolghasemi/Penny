@@ -22,7 +22,7 @@ e.g. ``{"epochs": 80, ..., "phase2": {"epochs": 40, "lr": 1e-3}}``.
 
 Usage::
 
-    uv run python -m crypto.train_2phase_diffusion configs/crypto/nobitex/twophase/btcirt_ofi_k10_dit.json
+    uv run python -m crypto.train_2phase_diffusion configs/crypto/coinbase/twophase/btcirt_ofi_k10_dit.json
 """
 
 from __future__ import annotations
@@ -398,7 +398,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/twophase/btcirt_ofi_k10_dit.json",
+        default="configs/crypto/coinbase/twophase/btcirt_ofi_k10_dit.json",
     )
     parser.add_argument("--backbone", default=None, help="override config['backbone']")
     parser.add_argument(

@@ -11,15 +11,15 @@ run, or each analysis standalone.
 
 ```bash
 # everything, over the three in-scope k10 checkpoints
-uv run python -m xai.run_all checkpoints/nobitex/BTCIRT
+uv run python -m xai.run_all checkpoints/coinbase/BTCIRT
 
 # choose the checkpoints / output dir explicitly
-uv run python -m xai.run_all checkpoints/nobitex/BTCIRT \
+uv run python -m xai.run_all checkpoints/coinbase/BTCIRT \
     --models ctabl_BTCIRT_ofi_k10 dla_BTCIRT_ofi_k10 jumpgatelob_levy_BTCIRT_ofi_k10 \
     --out results/xai
 
 # prove the wiring in a couple of minutes on CPU
-uv run python -m xai.run_all checkpoints/nobitex/BTCIRT --smoke
+uv run python -m xai.run_all checkpoints/coinbase/BTCIRT --smoke
 ```
 
 `run_all` runs every analysis in the [three-layer story](README.md), in order,
@@ -83,7 +83,7 @@ each written as both `.pdf` (vector, for LaTeX) and `.png` (preview / slides);
 missing artefacts are skipped with a warning.
 
 ```bash
-uv run python scripts/plot_xai.py checkpoints/nobitex/BTCIRT/xai_results \
+uv run python scripts/plot_xai.py checkpoints/coinbase/BTCIRT/xai_results \
     --outdir docs/xai/figures
 ```
 

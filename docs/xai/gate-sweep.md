@@ -73,7 +73,7 @@ and the two regimes should not be read as one curve.
 
 ```bash
 uv run python -m xai.run_gate_sweep \
-    checkpoints/nobitex/BTCIRT/jumpgatelob_levy_BTCIRT_ofi_k10 \
+    checkpoints/coinbase/BTCIRT/jumpgatelob_levy_BTCIRT_ofi_k10 \
     --n-windows 1024 --n-points 11
 ```
 

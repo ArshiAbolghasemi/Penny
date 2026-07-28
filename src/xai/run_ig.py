@@ -2,7 +2,7 @@
 
 Usage::
 
-    uv run python -m xai.run_ig checkpoints/nobitex/BTCIRT/ctabl_BTCIRT_ofi_k10
+    uv run python -m xai.run_ig checkpoints/coinbase/BTCIRT/ctabl_BTCIRT_ofi_k10
     uv run python -m xai.run_ig <ckpt_dir> --baseline mean --n-windows 1024
 
 Reads the run's own ``config.json`` so the dataset, feature mode and window

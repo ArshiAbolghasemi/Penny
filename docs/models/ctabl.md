@@ -60,5 +60,5 @@ matrix produces attention scores over time, softmaxed to `a`, then blended
 Supervised cross-entropy under the shared protocol.
 
 ```bash
-uv run python -m crypto.train_ctabl configs/crypto/nobitex/ctabl/btcirt_ofi_k10.json
+uv run python -m crypto.train_ctabl configs/crypto/coinbase/ctabl/btcirt_ofi_k10.json
 ```

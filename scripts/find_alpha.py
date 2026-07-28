@@ -2,7 +2,7 @@
 
 Usage:
     uv run python scripts/find_alpha.py --exchange binance --symbols USDCUSDT BTCUSDT
-    uv run python scripts/find_alpha.py --exchange nobitex --symbols BTCIRT USDTIRT
+    uv run python scripts/find_alpha.py --exchange coinbase --symbols BTCIRT USDTIRT
 """
 
 from __future__ import annotations

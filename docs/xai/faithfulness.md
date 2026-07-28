@@ -68,7 +68,7 @@ agreement with the unmasked prediction.
 ## Running
 
 ```bash
-uv run python -m xai.run_faithfulness checkpoints/nobitex/BTCIRT \
+uv run python -m xai.run_faithfulness checkpoints/coinbase/BTCIRT \
     --models ctabl_BTCIRT_ofi_k10 dla_BTCIRT_ofi_k10 jumpgatelob_levy_BTCIRT_ofi_k10 \
     --baseline zero --n-windows 1024 --n-points 11 --n-random 5
 ```

@@ -2,7 +2,7 @@
 
 Usage::
 
-    uv run python -m crypto.train_ofsatnet configs/crypto/nobitex/ofsatnet/usdtirt_ofi_k10.json
+    uv run python -m crypto.train_ofsatnet configs/crypto/coinbase/ofsatnet/usdtirt_ofi_k10.json
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/ofsatnet/usdtirt_ofi_k10.json",
+        default="configs/crypto/coinbase/ofsatnet/usdtirt_ofi_k10.json",
     )
     args = parser.parse_args()
 

@@ -38,7 +38,7 @@ cosine LR, early stopping on validation cross-entropy (shared protocol, see
 regularisation (acts as L2 on the linear weights).
 
 ```bash
-uv run python -m crypto.train_logreg configs/crypto/nobitex/logreg/btcirt_ofi_k10.json
+uv run python -m crypto.train_logreg configs/crypto/coinbase/logreg/btcirt_ofi_k10.json
 ```
 
 ## Why it's here

@@ -120,7 +120,7 @@ w(t) = (1 − t/T_max)²   if trend_taper else 1
 from the clean (`t = 0`) pass.
 
 ```bash
-uv run python -m crypto.train_jointdit configs/crypto/nobitex/jointdit/btcirt_ofi_k10.json
+uv run python -m crypto.train_jointdit configs/crypto/coinbase/jointdit/btcirt_ofi_k10.json
 ```
 
 ### 2. Consistency model (CM) · `crypto.train_jointdit_cm`
@@ -143,7 +143,7 @@ Keys: `cm_sigma_min`, `cm_sigma_max`, `cm_rho`, `cm_ema_decay`, `cm_s0`, `cm_s1`
 `cm_p_mean`, `cm_p_std`, `cm_sigma_data_auto`.
 
 ```bash
-uv run python -m crypto.train_jointdit_cm configs/crypto/nobitex/jointdit_cm/btcirt_ofi_k10.json
+uv run python -m crypto.train_jointdit_cm configs/crypto/coinbase/jointdit_cm/btcirt_ofi_k10.json
 ```
 
 ### 3. t-EDM (heavy-tailed CM) · `crypto.train_jointdit_tedm`
@@ -156,7 +156,7 @@ both points** of each consistency pair. `ν` is the single tail knob (`tedm_nu` 
 `--nu`); large `ν` → Gaussian EDM.
 
 ```bash
-uv run python -m crypto.train_jointdit_tedm configs/crypto/nobitex/jointdit_tedm/btcirt_ofi_k10.json --nu 5
+uv run python -m crypto.train_jointdit_tedm configs/crypto/coinbase/jointdit_tedm/btcirt_ofi_k10.json --nu 5
 ```
 
 ### 4. Drift (one-step generator) · `crypto.train_jointdit_drift`
@@ -176,7 +176,7 @@ Keys: `drift_r_list`, `drift_pos_per_sample`, `drift_neg_per_sample`,
 `drift_pos_bank`, `drift_neg_bank` (+ `cm_sigma_max`). Implemented in `models/drift.py`.
 
 ```bash
-uv run python -m crypto.train_jointdit_drift configs/crypto/nobitex/jointdit_drift/btcirt_ofi_k10.json
+uv run python -m crypto.train_jointdit_drift configs/crypto/coinbase/jointdit_drift/btcirt_ofi_k10.json
 ```
 
 ### 5. Lévy jump-diffusion · `crypto.train_jointdit_levy`
@@ -197,7 +197,7 @@ Keys: `diffusion_process`, `schedule` (`vp`/`ve`), `levy_jump_rate`,
 [JumpGateLOB](jumpgatelob.md) for more on the Lévy forward process.
 
 ```bash
-uv run python -m crypto.train_jointdit_levy configs/crypto/nobitex/jointditlevy/btcirt_ofi_k10.json
+uv run python -m crypto.train_jointdit_levy configs/crypto/coinbase/jointditlevy/btcirt_ofi_k10.json
 ```
 
 ### Two-phase probe · `crypto.train_2phase_diffusion`
@@ -211,7 +211,7 @@ linearly-decodable the *purely generative* features are. Config lives under
 `configs/*/twophase/*_dit_{edm,drift}.json`.
 
 ```bash
-uv run python -m crypto.train_2phase_diffusion configs/crypto/nobitex/twophase/btcirt_ofi_k10_dit_edm.json
+uv run python -m crypto.train_2phase_diffusion configs/crypto/coinbase/twophase/btcirt_ofi_k10_dit_edm.json
 ```
 
 ## Supporting modules

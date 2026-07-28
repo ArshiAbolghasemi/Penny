@@ -33,7 +33,7 @@ Modes:
 
 Usage::
 
-    uv run python -m crypto.train_jumpgatelob configs/crypto/nobitex/jumpgatelob/btcirt_ofi_k10.json
+    uv run python -m crypto.train_jumpgatelob configs/crypto/coinbase/jumpgatelob/btcirt_ofi_k10.json
     uv run python -m crypto.train_jumpgatelob ... --process gaussian
     uv run python -m crypto.train_jumpgatelob ... --baseline
 """
@@ -255,7 +255,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/jumpgatelob/btcirt_ofi_k10.json",
+        default="configs/crypto/coinbase/jumpgatelob/btcirt_ofi_k10.json",
     )
     parser.add_argument("--process", choices=["levy", "gaussian"], default=None)
     parser.add_argument(

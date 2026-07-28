@@ -8,7 +8,7 @@ Transformer backbone instead of a U-Net:
 
 Usage::
 
-    uv run python -m crypto.train_jointdit configs/crypto/nobitex/jointdit/btcirt_ofi.json
+    uv run python -m crypto.train_jointdit configs/crypto/coinbase/jointdit/btcirt_ofi.json
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/jointdit/btcirt_ofi.json",
+        default="configs/crypto/coinbase/jointdit/btcirt_ofi.json",
     )
     args = parser.parse_args()
 

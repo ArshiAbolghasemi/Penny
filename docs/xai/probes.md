@@ -63,7 +63,7 @@ Two more anti-leak details:
 ## Running
 
 ```bash
-uv run python -m xai.run_probes checkpoints/nobitex/BTCIRT \
+uv run python -m xai.run_probes checkpoints/coinbase/BTCIRT \
     --models ctabl_BTCIRT_ofi_k10 dla_BTCIRT_ofi_k10 jumpgatelob_levy_BTCIRT_ofi_k10 \
     --n-train 8192 --n-test 4096 --epochs 200
 ```

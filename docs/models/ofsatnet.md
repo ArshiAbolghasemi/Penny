@@ -91,5 +91,5 @@ Supervised cross-entropy under the shared protocol (this repo's benchmark task i
 return — see [README](README.md#shared-training-protocol)).
 
 ```bash
-uv run python -m crypto.train_ofsatnet configs/crypto/nobitex/ofsatnet/usdtirt_ofi_k10.json
+uv run python -m crypto.train_ofsatnet configs/crypto/coinbase/ofsatnet/usdtirt_ofi_k10.json
 ```

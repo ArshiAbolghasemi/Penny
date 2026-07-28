@@ -66,6 +66,6 @@ the start of every run and stored in the run metadata.
 | `label_k`     | trend horizon (bins)             | 10 / 20 / 50 / 100 |
 | `norm_window` | causal rolling z-score window    | 2000 |
 | `train_frac` / `val_frac` | chronological split | 0.70 / 0.15 |
-| `n_lob_levels`| LOB levels kept                  | 10 (Binance) / 20 (Nobitex) |
+| `n_lob_levels`| LOB levels kept                  | 10 (Binance) / 20 (Coinbase) |
 | `feature_mode`| `ofi` or `lob`                   | `ofi` |
 | `cache_dir`   | where the `.npy` memmap lives     | `data/cache/…` |

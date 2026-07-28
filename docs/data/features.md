@@ -71,7 +71,7 @@ these substitute with same-intent proxies:
 | `n_lob_levels` | `ofi` (`n+11`) | `lob` (`4n+11`) |
 |----------------|----------------|-----------------|
 | 10 (Binance)   | 21             | 51              |
-| 20 (Nobitex)   | 31             | 91              |
+| 20 (Coinbase)   | 31             | 91              |
 
 The exact count is computed by `features.n_features(config)` and written back into
 the config as `n_features` at dataset-build time, so every model reads its true input

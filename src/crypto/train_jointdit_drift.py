@@ -22,7 +22,7 @@ single forward pass — no ODE integration, no iterative sampling.
 
 Usage::
 
-    uv run python -m crypto.train_jointdit_drift configs/crypto/nobitex/jointdit/btcirt_ofi.json
+    uv run python -m crypto.train_jointdit_drift configs/crypto/coinbase/jointdit/btcirt_ofi.json
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/jointdit/btcirt_ofi.json",
+        default="configs/crypto/coinbase/jointdit/btcirt_ofi.json",
     )
     args = parser.parse_args()
 

@@ -1,7 +1,7 @@
 """Calibrate AlphaStableLOB/JumpGateLOB corruption-kernel hyperparameters per altcoin.
 
 Both models currently train with a single global kernel shared across every
-Nobitex market: ``astable_alpha=1.5`` (AlphaStableLOB) and ``levy_jump_rate=1.0``
+Coinbase market: ``astable_alpha=1.5`` (AlphaStableLOB) and ``levy_jump_rate=1.0``
 (JumpGateLOB) — untouched defaults, never fit to any symbol's actual tail/jump
 behaviour (see ``src/levy/config.py``'s own TODO on ``jump_rate``). This script
 estimates two symbol-specific, data-derived replacements for BNBIRT, ETHIRT,
@@ -62,9 +62,9 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 from crypto.features import extract_features  # noqa: E402
 
-CRYPTO_DIR = REPO / "data" / "resampled" / "nobitex"
-ALPHASTABLE_CFG_DIR = REPO / "configs" / "crypto" / "nobitex" / "alphastablelob"
-JUMPGATE_CFG_DIR = REPO / "configs" / "crypto" / "nobitex" / "jumpgatelob"
+CRYPTO_DIR = REPO / "data" / "resampled" / "coinbase"
+ALPHASTABLE_CFG_DIR = REPO / "configs" / "crypto" / "coinbase" / "alphastablelob"
+JUMPGATE_CFG_DIR = REPO / "configs" / "crypto" / "coinbase" / "jumpgatelob"
 
 ALTCOINS = [
     "BNBIRT",
@@ -280,7 +280,7 @@ def main() -> None:
 
     if not args.apply:
         print(
-            "\n(dry run — pass --apply to write configs/crypto/nobitex/{alphastablelob,jumpgatelob}/*.json)"
+            "\n(dry run — pass --apply to write configs/crypto/coinbase/{alphastablelob,jumpgatelob}/*.json)"
         )
         return
 

@@ -9,7 +9,7 @@ supervised training would produce; at inference only the cheap classification pa
 runs.
 
 The project forecasts a 3-class LOB **trend** (`down / flat / up`) on crypto data from
-**Binance** (USDT pairs) and **Nobitex** (Iranian Toman pairs), and ships a suite of
+**Binance** (USDT pairs) and **Coinbase** (Iranian Toman pairs), and ships a suite of
 established **discriminative baselines** alongside the joint models for comparison.
 
 - **Joint generative–discriminative models:** JointDiT (Diffusion Transformer, with
@@ -73,7 +73,7 @@ If you have raw exchange dumps but no resampled parquet, regenerate them:
 
 ```bash
 uv run python scripts/resample_binance.py --interval 10 --levels 10
-uv run python scripts/resample_nobitex.py --levels 20
+uv run python scripts/resample_coinbase.py --levels 20
 ```
 
 Details: [docs/data](docs/data/README.md).
@@ -88,19 +88,19 @@ Every run is driven by a single JSON config under `configs/`. The invocation is
 uv run python -m crypto.train_deeplob   configs/crypto/binance/deeplob/btcusdt_ofi.json
 
 # joint generative–discriminative (base DDPM objective)
-uv run python -m crypto.train_jointdit  configs/crypto/nobitex/jointdit/btcirt_ofi_k10.json
+uv run python -m crypto.train_jointdit  configs/crypto/coinbase/jointdit/btcirt_ofi_k10.json
 
 # JointDiT alternative training objectives (same backbone)
-uv run python -m crypto.train_jointdit_cm    configs/crypto/nobitex/jointdit_cm/btcirt_ofi_k10.json
-uv run python -m crypto.train_jointdit_tedm  configs/crypto/nobitex/jointdit_tedm/btcirt_ofi_k10.json --nu 5
-uv run python -m crypto.train_jointdit_drift configs/crypto/nobitex/jointdit_drift/btcirt_ofi_k10.json
-uv run python -m crypto.train_jointdit_levy  configs/crypto/nobitex/jointditlevy/btcirt_ofi_k10.json
+uv run python -m crypto.train_jointdit_cm    configs/crypto/coinbase/jointdit_cm/btcirt_ofi_k10.json
+uv run python -m crypto.train_jointdit_tedm  configs/crypto/coinbase/jointdit_tedm/btcirt_ofi_k10.json --nu 5
+uv run python -m crypto.train_jointdit_drift configs/crypto/coinbase/jointdit_drift/btcirt_ofi_k10.json
+uv run python -m crypto.train_jointdit_levy  configs/crypto/coinbase/jointditlevy/btcirt_ofi_k10.json
 
 # Lévy jump-aware joint model (feature-only inference)
-uv run python -m crypto.train_jumpgatelob    configs/crypto/nobitex/jumpgatelob/btcirt_ofi_k10.json
+uv run python -m crypto.train_jumpgatelob    configs/crypto/coinbase/jumpgatelob/btcirt_ofi_k10.json
 
 # α-stable joint model (heavy, power-law-tailed Lévy noise + generalized score matching)
-uv run python -m crypto.train_alphastablelob configs/crypto/nobitex/alphastablelob/btcirt_ofi_k10.json
+uv run python -m crypto.train_alphastablelob configs/crypto/coinbase/alphastablelob/btcirt_ofi_k10.json
 ```
 
 Each run builds/loads the feature cache, trains with early stopping, restores the best
@@ -118,7 +118,7 @@ Batch scripts under `slurm/` submit any config to a GPU node and auto-select the
 CUDA/CPU extra from the detected GPU:
 
 ```bash
-sbatch slurm/nobitex/btcirt/k10/jointdit_ofi.slurm
+sbatch slurm/coinbase/btcirt/k10/jointdit_ofi.slurm
 CONFIG=configs/crypto/binance/deeplob/btcusdt_lob.json sbatch slurm/binance/btcusdt/k10/deeplob_lob.slurm
 ```
 
@@ -136,7 +136,7 @@ symbol has no horizon sweep.
 
 Per-topic files:
 
-- Data: [binance](docs/data/binance.md) · [nobitex](docs/data/nobitex.md) ·
+- Data: [binance](docs/data/binance.md) · [coinbase](docs/data/coinbase.md) ·
   [features](docs/data/features.md) · [labels](docs/data/labels.md) ·
   [windows & normalisation](docs/data/windows-and-normalization.md)
 - Models: [DeepLOB](docs/models/deeplob.md) · [CTABL](docs/models/ctabl.md) ·
@@ -153,7 +153,7 @@ Per-topic files:
 
 ```
 configs/          per-model / per-symbol / per-horizon JSON configs
-scripts/          resample_binance.py, resample_nobitex.py, find_alpha.py, plot_xai.py
+scripts/          resample_binance.py, resample_coinbase.py, find_alpha.py, plot_xai.py
 slurm/            SLURM batch scripts mirroring configs/
 src/
   crypto/         data pipeline (features, labels, dataset, loader) + train_*.py entry points

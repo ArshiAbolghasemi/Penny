@@ -30,7 +30,7 @@ tails.  Inference reads the trend logits from the denoised (``sigma_min``) pass.
 
 Usage::
 
-    uv run python -m crypto.train_jointdit_tedm configs/crypto/nobitex/jointdit/btcirt_ofi.json --nu 5
+    uv run python -m crypto.train_jointdit_tedm configs/crypto/coinbase/jointdit/btcirt_ofi.json --nu 5
 """
 
 from __future__ import annotations
@@ -207,7 +207,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/crypto/nobitex/jointdit/btcirt_ofi.json",
+        default="configs/crypto/coinbase/jointdit/btcirt_ofi.json",
     )
     parser.add_argument(
         "--nu",

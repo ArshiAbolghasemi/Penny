@@ -2,7 +2,7 @@
 
 Usage::
 
-    uv run python scripts/plot_xai.py checkpoints/nobitex/BTCIRT/xai_results
+    uv run python scripts/plot_xai.py checkpoints/coinbase/BTCIRT/xai_results
     uv run python scripts/plot_xai.py <results_dir> --outdir docs/xai/figures
 
 Reads the JSON / NPZ files written by ``python -m xai.run_all`` (or the
