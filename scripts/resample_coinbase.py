@@ -160,9 +160,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    data_dir = Path(args.data_dir) if args.data_dir else _ROOT / "data" / "coinbase_data"
+    data_dir = (
+        Path(args.data_dir) if args.data_dir else _ROOT / "data" / "coinbase_data"
+    )
     out_dir = (
-        Path(args.out_dir) if args.out_dir else _ROOT / "data" / "resampled" / "coinbase"
+        Path(args.out_dir)
+        if args.out_dir
+        else _ROOT / "data" / "resampled" / "coinbase"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
