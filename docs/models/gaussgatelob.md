@@ -132,12 +132,13 @@ Forward / losses: `schedule` (`vp`/`ve`), `T_max`, `beta_start`, `beta_end`,
 `ve_sigma_min`, `ve_sigma_max`, `lambda_diff`, `mu_robust`, `robust_kl`,
 `label_smoothing`.
 
-Ships with BTCIRT configs at every horizon —
-`configs/crypto/coinbase/gaussgatelob/btcirt_ofi_k{10,20,50,100}.json` — cloned from
-the JumpGateLOB ones so the arms differ *only* in the noise law (the `levy_*` jump
-keys have no counterpart and are absent).
+Every config is cloned from its JumpGateLOB counterpart so the arms differ *only* in
+the noise law (the `levy_*` jump keys have no counterpart and are absent), with the
+robust-loss weights `mu_robust = 0.5` / `robust_kl = 1.0` carried over unchanged.
 
 ## Run
+
+Crypto (Coinbase BTCIRT, every horizon):
 
 ```bash
 uv run python -m crypto.train_gaussgatelob configs/crypto/coinbase/gaussgatelob/btcirt_ofi_k10.json
@@ -145,3 +146,20 @@ uv run python -m crypto.train_gaussgatelob ... --baseline    # plain-classifier 
 
 sbatch slurm/coinbase/btcirt/k10/gaussgatelob_ofi.slurm      # k ∈ {10, 20, 50, 100}
 ```
+
+Equity (Feishu A-share) — both pipelines, mirroring JumpGateLOB and AlphaStableLOB:
+
+```bash
+# alpha-threshold labels, all symbols jointly
+uv run python -m stocks.feishu.train_gaussgatelob configs/stocks/feishu/gaussgatelob_ofi.json
+sbatch slurm/stocks/feishu/gaussgatelob_ofi.slurm
+
+# mid-price quantile labels, horizon sweep h ∈ {1, 2, 3, 5, 10}
+uv run python -m stocks.feishu_midprice.train_gaussgatelob configs/stocks/feishu_midprice/gaussgatelob_h1.json
+sbatch slurm/stocks/feishu_midprice/gaussgatelob_h1.slurm
+```
+
+The feishu runs checkpoint to `checkpoints/stocks/feishu/gaussgatelob/<run>/`, which is
+the layout `scripts/portfolio_backtest.py` discovers — GaussGateLOB is registered there
+under the `gaussgatelob` tag, so the OOS portfolio backtest picks it up automatically
+once an `*_all` run exists (and skips it silently until then).

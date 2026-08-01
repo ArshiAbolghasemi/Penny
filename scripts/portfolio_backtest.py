@@ -11,8 +11,9 @@ Original file is located at
 Same pipeline and rules as the original DeepLOB-only version. The only change
 is **which model generates the trading signal**: this now loops the identical
 backtest over every model in the project's `_all` checkpoint set (`deeplob`,
-`ctabl`, `dla`, `tlob`, `linvar`, `logreg`, `jumpgatelob`, `alphastablelob`) —
-the full-universe-trained runs under `checkpoints/stocks/feishu/<model>/*_all/best.pt`.
+`ctabl`, `dla`, `tlob`, `linvar`, `logreg`, `jumpgatelob`, `alphastablelob`,
+`gaussgatelob`) — the full-universe-trained runs under
+`checkpoints/stocks/feishu/<model>/*_all/best.pt`.
 
 - Loads **out-of-sample** parquet files (`lob_data_release_stage_out_of_sample.parquet`,
   `daily_data_release_stage_out_of_sample.parquet`) for backtesting, plus the
@@ -27,8 +28,9 @@ the full-universe-trained runs under `checkpoints/stocks/feishu/<model>/*_all/be
   at day-t data when the morning vwap[t] is the entry price.
 
 > Each model runs the full OOS backtest independently (own `PortfolioManager`,
-> own trade log, own submission CSV) — this is 8x the runtime of the original
-> single-model notebook.
+> own trade log, own submission CSV) — this is 9x the runtime of the original
+> single-model notebook. Models with no discovered checkpoint are skipped, so
+> the loop still runs if a tag has not been trained yet.
 """
 
 import sys
@@ -398,12 +400,15 @@ from models.alphastablelob import AlphaStableLOB  # noqa: E402
 from models.ctabl import CTABL  # noqa: E402
 from models.deeplob import DeepLOB  # noqa: E402
 from models.dla import DLA  # noqa: E402
+from models.gaussgatelob import GaussGateLOB  # noqa: E402
 from models.jumpgatelob import JumpGateLOB  # noqa: E402
 from models.linvar import LinVAR  # noqa: E402
 from models.logreg import LogReg  # noqa: E402
 from models.tlob import TLOB  # noqa: E402
 
 # tag -> model class. checkpoints/stocks/feishu/<tag>/ holds that model's runs.
+# The last three share one trunk and differ only in the training-time corruption
+# law (jump-diffusion / α-stable / Gaussian), so their P&L is directly comparable.
 MODEL_REGISTRY = {
     "logreg": LogReg,
     "linvar": LinVAR,
@@ -413,6 +418,7 @@ MODEL_REGISTRY = {
     "tlob": TLOB,
     "jumpgatelob": JumpGateLOB,
     "alphastablelob": AlphaStableLOB,
+    "gaussgatelob": GaussGateLOB,
 }
 log.info(f"model registry: {list(MODEL_REGISTRY)}")
 

@@ -167,7 +167,7 @@ src/
   models/         model architectures + shared diffusion machinery (ddpm, consistency, drift, probe)
   xai/            explainability layer (IG attribution, probes, CKA, agreement, gate sweep) + run_all
   levy/           Lévy jump-diffusion forward process + tabulated generalized score
-  stocks/feishu/  equity (A-share) pipeline — DeepLOB only
+  stocks/feishu/  equity (A-share) pipeline + feishu_midprice horizon sweep
   utils/          training loop helpers, evaluation, FLOPs, PCGrad
 docs/             this documentation
 data/             DVC-tracked (not in git)
