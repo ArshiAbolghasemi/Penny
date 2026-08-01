@@ -5,7 +5,8 @@ Same joint structure as ``stocks.feishu_midprice.train_jumpgatelob`` — a share
 sees at inference — but the generative branch uses a genuine **α-stable (Lévy-stable)**
 forward process (heavy, power-law tails; :mod:`models.alphastable`) and is trained by
 **generalized denoising score matching** against the tabulated α-stable score.  Three
-terms, all active in the default (joint) mode:
+terms — but ``L_robust`` is gated by ``mu_robust``, which every shipped config
+sets to ``0``:
 
     L_cls    = CE(classify(x0), label)                       # clean pass, t = 0
     L_score  = mean || ŝ(c_in·x_t, t) − ∇log q(x_t|x0) ||²   # noised pass, sampled t
@@ -37,7 +38,8 @@ alongside ``noisy_val_f1`` — macro-F1 on α-stable-noised validation windows, 
 robustness metric ``L_robust`` is trying to move.
 
 Modes:
-  * default    — joint (all three losses each step).
+  * default    — joint: ``L_cls`` + ``L_score`` each step, plus ``L_robust``
+                 only when ``mu_robust > 0`` (shipped configs set it to 0).
   * --baseline — plain classifier: ``L_cls`` only, no diffusion / robustness losses.
 
 Usage::

@@ -1,7 +1,8 @@
 """Train JumpGateLOB: jump-diffusion score matching + noise-consistent classification.
 
 Joint objective on a shared trunk, with **separate passes**, built for LOB data that
-is noisy and contains jumps.  Three terms, all always active:
+is noisy and contains jumps.  Three terms — but ``L_robust`` is gated by
+``mu_robust``, which every shipped config sets to ``0``:
 
     L_cls    = CE(classify(x0), label)                       # clean pass, t = 0
     L_score  = w̄_t · || ŝ(x_t, t) − ∇log q(x_t|x0) ||²       # generalized score matching
@@ -27,7 +28,8 @@ Model selection / early stopping on **trend-head macro-F1** (feature-only); trai
 val F1 are both logged so the noise-fitting gap is visible.
 
 Modes:
-  * default    — joint (all three losses each step).
+  * default    — joint: ``L_cls`` + ``L_score`` each step, plus ``L_robust``
+                 only when ``mu_robust > 0`` (shipped configs set it to 0).
   * --process gaussian — ablation: no jumps in the forward process.
   * --baseline — plain classifier: ``L_cls`` only.
 

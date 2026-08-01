@@ -60,10 +60,11 @@ Each run writes `best.pt`, `config.json` and `training_log.json` to a timestampe
 | **AlphaStableLOB** | JumpGateLOB's GRU+attention trunk with a genuine **α-stable** (Lévy-stable, power-law-tailed) forward process, trained by generalized score matching | [alphastablelob.md](alphastablelob.md) |
 | **GaussGateLOB** | The same trunk and objective with **plain Gaussian** noise and the closed-form score — the controlled reference the two heavy-tailed kernels are measured against | [gaussgatelob.md](gaussgatelob.md) |
 
-The last three share one architecture and one three-term objective (clean CE +
-score matching + noise-consistency) and differ **only in the corruption law** —
-Gaussian, finite-variance jump-diffusion, or α-stable — so their trend metrics are
-directly attributable to the noise kernel.
+The last three share one architecture and one objective — clean CE + score matching,
+plus an optional noise-consistency term (`mu_robust`, shipped at `0.0` = off across all
+three) — and differ **only in the corruption law**: Gaussian, finite-variance
+jump-diffusion, or α-stable. Their trend metrics are therefore directly attributable to
+the noise kernel.
 
 ## Shared building blocks
 

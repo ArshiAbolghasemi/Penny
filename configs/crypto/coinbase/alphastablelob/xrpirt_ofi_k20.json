@@ -24,6 +24,8 @@
   "device": "cuda",
   "seed": 42,
   "lambda_diff": 1.0,
+  "mu_robust": 0.0,
+  "robust_kl": 1.0,
   "cls_dropout": 0.2,
   "label_smoothing": 0.1,
   "astable_alpha": 1.615,

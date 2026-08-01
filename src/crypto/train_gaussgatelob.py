@@ -31,7 +31,8 @@ Model selection / early stopping on **trend-head macro-F1** (feature-only); trai
 val F1 are both logged so the noise-fitting gap is visible.
 
 Modes:
-  * default    — joint (all three losses each step).
+  * default    — joint: ``L_cls`` + ``L_score`` each step, plus ``L_robust``
+                 only when ``mu_robust > 0`` (shipped configs set it to 0).
   * --baseline — plain classifier: ``L_cls`` only.
 
 Usage::

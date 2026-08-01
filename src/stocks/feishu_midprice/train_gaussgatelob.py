@@ -35,7 +35,8 @@ out-of-sample split.  Checkpoints land under ``checkpoint_dir`` as
 ``scripts/portfolio_backtest.py`` discovers.
 
 Modes:
-  * default    — joint (all three losses each step).
+  * default    — joint: ``L_cls`` + ``L_score`` each step, plus ``L_robust``
+                 only when ``mu_robust > 0`` (shipped configs set it to 0).
   * --baseline — plain classifier: ``L_cls`` only.
 
 Usage::

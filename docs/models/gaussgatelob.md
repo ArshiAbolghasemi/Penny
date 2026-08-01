@@ -78,7 +78,9 @@ two runs sit on an identical noise ladder.
 
 ## Training objective
 
-Joint, with **separate passes**; all three terms are always active:
+Joint, with **separate passes**. Three terms — but `L_robust` is gated by `μ_robust`,
+which **every shipped config sets to `0`**, so as configured the model trains on
+`L_cls + λ_diff·L_score` and the robustness term is dormant until you raise it:
 
 ```
 L_cls    = CE(classify(x₀), label)                       # clean pass, t = 0
@@ -93,15 +95,16 @@ L        = L_cls + λ_diff·L_score + μ_robust·L_robust
   at every timestep. With that weight the term is algebraically ε-prediction MSE,
   `‖σ_t·ŝ + ε‖²`; the model still *parameterises* the score, so the comparison against
   the tabulated-score models is like-for-like.
-- **`L_robust`** is the piece that makes the *inference path* robust: `x̃` is the same
-  forward applied at a **low `t`** (the SNR ≥ 1 region, `ᾱ_t ≥ 0.5`, so the label is
-  still recoverable), classified at the head's `t = 0` conditioning — deployment never
-  knows the noise level. CE keeps the noisy prediction correct; the KL term pulls it
-  toward the model's own clean prediction.
+- **`L_robust`** (**off by default — `mu_robust: 0.0`**) is the piece that makes the
+  *inference path* robust: `x̃` is the same forward applied at a **low `t`** (the
+  SNR ≥ 1 region, `ᾱ_t ≥ 0.5`, so the label is still recoverable), classified at the
+  head's `t = 0` conditioning — deployment never knows the noise level. CE keeps the
+  noisy prediction correct; the KL term pulls it toward the model's own clean
+  prediction. Set `mu_robust > 0` to switch it on.
 
 Model selection / early stopping on **trend-head macro-F1** (feature-only). Each epoch
 also logs `noisy_val_f1` — macro-F1 on Gaussian-noised validation windows — alongside
-the train/val F1 gap.
+the train/val F1 gap; with `mu_robust: 0.0` it is diagnostic only.
 
 ### Modes
 
@@ -133,8 +136,9 @@ Forward / losses: `schedule` (`vp`/`ve`), `T_max`, `beta_start`, `beta_end`,
 `label_smoothing`.
 
 Every config is cloned from its JumpGateLOB counterpart so the arms differ *only* in
-the noise law (the `levy_*` jump keys have no counterpart and are absent), with the
-robust-loss weights `mu_robust = 0.5` / `robust_kl = 1.0` carried over unchanged.
+the noise law (the `levy_*` jump keys have no counterpart and are absent), including
+the robust-loss weights — `mu_robust: 0.0` (term off) and `robust_kl: 1.0` (inert
+while `mu_robust` is 0), identical across all three model families.
 
 ## Run
 

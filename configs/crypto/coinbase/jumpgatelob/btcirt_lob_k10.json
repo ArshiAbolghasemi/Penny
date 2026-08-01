@@ -43,6 +43,8 @@
   "mu_jump": 0.05,
   "jump_rv_k": 4.0,
   "lambda_diff": 1.0,
+  "mu_robust": 0.0,
+  "robust_kl": 1.0,
   "jgl_local": "gru",
   "jgl_gru_hidden": 64,
   "jgl_gru_layers": 2,

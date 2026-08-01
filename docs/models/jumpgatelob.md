@@ -73,7 +73,9 @@ configs and checkpoints). Pushing the tails the other way — infinite variance 
 
 ## Training objective
 
-Joint, with **separate passes**; all three terms are always active:
+Joint, with **separate passes**. Three terms — but `L_robust` is gated by `μ_robust`,
+which **every shipped config sets to `0`**, so as configured the model trains on
+`L_cls + λ_diff·L_score` and the robustness term is dormant until you raise it:
 
 ```
 L_cls    = CE(classify(x₀), label)                       # clean pass, t = 0
@@ -85,15 +87,18 @@ L        = L_cls + λ_diff·L_score + μ_robust·L_robust
 
 - **`L_score`** shapes the trunk on jump-diffusion perturbations; the per-sample weight
   `w̄_t = E[W_t] = σ_t² + Λ_t·shape·scale` keeps the target O(1) at every timestep.
-- **`L_robust`** is the piece that makes the *inference path* robust: `x̃` is the same
-  jump-diffusion forward applied at a **low `t`** (the SNR ≥ 1 region, so the label is
-  still recoverable), classified at the head's `t = 0` conditioning — deployment never
-  knows the noise level. CE keeps the noisy prediction correct; the KL term pulls it
-  toward the model's own clean prediction.
+- **`L_robust`** (**off by default — `mu_robust: 0.0`**) is the piece that makes the
+  *inference path* robust: `x̃` is the same jump-diffusion forward applied at a **low
+  `t`** (the SNR ≥ 1 region, so the label is still recoverable), classified at the
+  head's `t = 0` conditioning — deployment never knows the noise level. CE keeps the
+  noisy prediction correct; the KL term pulls it toward the model's own clean
+  prediction. Set `mu_robust > 0` to switch it on; `robust_kl` (shipped at `1.0`) then
+  balances the KL against the CE inside it.
 
 Model selection / early stopping on **trend-head macro-F1** (feature-only). Each epoch
-also logs `noisy_val_f1` — macro-F1 on jump-noised validation windows — the robustness
-metric `L_robust` is trying to move, alongside the train/val F1 gap.
+also logs `noisy_val_f1` — macro-F1 on jump-noised validation windows — alongside the
+train/val F1 gap. With `mu_robust: 0.0` that metric is diagnostic only (nothing is
+optimising it); it becomes the target `L_robust` moves once the term is enabled.
 
 ### Modes
 

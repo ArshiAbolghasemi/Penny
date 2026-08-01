@@ -81,7 +81,9 @@ flowchart TD
 ## Training objective
 
 Joint, with **separate passes** so the trend head always sees the clean-window
-distribution it will see at inference. Three terms, all active by default:
+distribution it will see at inference. Three terms — but `L_robust` is gated by
+`μ_robust`, which **every shipped config sets to `0`**, so as configured the model
+trains on `L_cls + λ_diff·L_score`:
 
 ```
 L_cls    = CE(classify(x₀), label)                     # clean pass, t = 0
@@ -94,15 +96,16 @@ L        = L_cls + λ_diff·L_score + μ_robust·L_robust
 The score target `−u·h(|u|)` is bounded (the score of a heavy-tailed law decays), so a
 plain MSE on the score is well-behaved even though the *noise* has infinite variance.
 
-**`L_robust`** is the same noise-consistency term [JumpGateLOB](jumpgatelob.md) uses,
-here driven by **heavy-tailed** rather than jump-diffusion noise, and configured
-identically (`mu_robust`, `robust_kl` carry the Lévy model's values). `x̃` is the
-α-stable forward applied at a **low `t`** — the SNR ≥ 1 region, `ᾱ_t ≥ 0.5`, so the
-label is still recoverable — classified at the head's `t = 0` conditioning, because
-deployment never knows the noise level. CE keeps the noisy prediction correct; the KL
-term pulls it toward the model's own clean prediction. Without it the α-stable branch
-regularises the trunk only *indirectly* through the score head, and the classifier
-itself never sees a heavy-tailed window.
+**`L_robust`** (**off by default — `mu_robust: 0.0`**) is the same noise-consistency
+term [JumpGateLOB](jumpgatelob.md) uses, here driven by **heavy-tailed** rather than
+jump-diffusion noise, and configured identically (`mu_robust`, `robust_kl` carry the
+Lévy model's values). `x̃` is the α-stable forward applied at a **low `t`** — the
+SNR ≥ 1 region, `ᾱ_t ≥ 0.5`, so the label is still recoverable — classified at the
+head's `t = 0` conditioning, because deployment never knows the noise level. CE keeps
+the noisy prediction correct; the KL term pulls it toward the model's own clean
+prediction. While it is off the α-stable branch regularises the trunk only *indirectly*
+through the score head and the classifier never sees a heavy-tailed window; set
+`mu_robust > 0` to change that.
 
 The robust pass reuses the score pass's `c_in` scaling. Unlike the finite-variance
 jump-diffusion, an α-stable draw can be enormous even at low `t` — on z-scored features
@@ -112,8 +115,9 @@ changes the window's contrast, not its pattern.
 
 Model selection and early stopping are on **trend-head macro-F1** (feature-only), not
 the score loss. Each epoch also logs `noisy_val_f1` — macro-F1 on α-stable-noised
-validation windows, the robustness metric `L_robust` is trying to move. `--baseline`
-runs `L_cls` only (no diffusion, no robustness); `--alpha` overrides the tail index.
+validation windows; with `mu_robust: 0.0` it is diagnostic only, and becomes the metric
+`L_robust` moves once the term is enabled. `--baseline` runs `L_cls` only (no diffusion,
+no robustness); `--alpha` overrides the tail index.
 
 ## I/O
 
@@ -126,8 +130,9 @@ runs `L_cls` only (no diffusion, no robustness); `--alpha` overrides the tail in
 Tail / diffusion: `astable_alpha` (stability index, `2.0` = Gaussian, smaller = heavier
 tails), `T_max`, `cosine_s`, `astable_num_r`, `astable_mc`, `astable_clip_q`,
 `lambda_diff`.
-Robustness: `mu_robust` (weight on `L_robust`), `robust_kl` (weight on the
-clean/noisy KL inside it) — same values as the Lévy model's configs.
+Robustness: `mu_robust` (weight on `L_robust`, ships at `0.0` = off), `robust_kl`
+(weight on the clean/noisy KL inside it, ships at `1.0` and is inert while `mu_robust`
+is 0) — same values as the Lévy model's configs.
 Trunk: `astable_local` (`gru`/`conv`), `astable_gru_hidden`, `astable_gru_layers`,
 `astable_bidirectional`, `astable_attn_heads`, `astable_diff_channels`,
 `astable_diff_blocks`, `astable_feat_mix` (`conv`/`attn`), `astable_time_emb`,
