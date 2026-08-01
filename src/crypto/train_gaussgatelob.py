@@ -1,50 +1,43 @@
-"""Train AlphaStableLOB: α-stable joint diffusion-classifier (feature-only inference).
+"""Train GaussGateLOB: Gaussian score matching + noise-consistent classification.
 
-Same joint structure as ``stocks.feishu.train_jumpgatelob`` — a shared trunk trained on
-**separate passes** so the trend head always sees the clean-window distribution it
-sees at inference — but the generative branch uses a genuine **α-stable (Lévy-stable)**
-forward process (heavy, power-law tails; :mod:`models.alphastable`) and is trained by
-**generalized denoising score matching** against the tabulated α-stable score.  Three
-terms, all active in the default (joint) mode:
+The **Gaussian control** for the two heavy-tailed joint models. Same architecture as
+``crypto.train_jumpgatelob``, same three-term objective, same schedule and DSM
+weighting — the *only* change is the corruption law: plain Brownian noise instead of
+the Lévy jump-diffusion (``train_jumpgatelob``) or the α-stable law
+(``train_alphastablelob``). Any downstream difference in trend accuracy is therefore
+attributable to the noise law alone.
 
     L_cls    = CE(classify(x0), label)                       # clean pass, t = 0
-    L_score  = mean || ŝ(c_in·x_t, t) − ∇log q(x_t|x0) ||²   # noised pass, sampled t
-    L_robust = CE(classify(c_in·x̃), label)                   # α-stable-noised low-t pass
+    L_score  = σ_t² · || ŝ(x_t, t) − ∇log q(x_t|x0) ||²       # exact score matching
+    L_robust = CE(classify(x̃), label)                        # Gaussian-noised low-t pass
              + robust_kl · KL( p(x̃) ‖ p(x0).detach() )       # clean/noisy consistency
     L        = L_cls + lambda_diff · L_score + mu_robust · L_robust
 
-``∇log q = −u·h(|u|)`` is the isotropic score of the subordinated-Gaussian α-stable
-kernel (``h`` a precomputed 1-D table); ``c_in = 1/√(1+W)`` is an EDM-style input scale
-that keeps the heavy-tailed noised window ``O(1)`` for the network.
+* **Forward process** — :class:`models.gaussian.GaussianDiffusion`: ``u = σ_t·ε`` with
+  the same VP (linear-β) / VE schedule the Lévy path uses. Nothing to tabulate and no
+  jump/tail hyperparameters to set.
+* **L_score** — denoising score matching against the **closed-form** Gaussian score
+  ``∇log q = −u/σ_t²`` (no Monte-Carlo table, unlike the scale-mixture kernels),
+  weighted per sample by ``σ_t² = E[W_t]`` so the target is O(1) at every timestep.
+  With that weight the term is algebraically ε-prediction MSE, ``‖σ_t·ŝ + ε‖²``.
+* **L_robust** — the trend head classifies **noised** windows drawn from the same
+  forward process at low ``t`` (the SNR ≥ 1 region, so the label is still recoverable),
+  always at the classifier's ``t = 0`` conditioning (deployment never knows the noise
+  level). CE keeps it correct under noise; the KL term pulls the noisy prediction
+  toward its own clean prediction — this trains the *inference path itself* to be
+  robust to noise.
 
-**L_robust** (the same noise-consistency term ``stocks.feishu.train_jumpgatelob`` uses, here
-driven by heavy-tailed rather than jump-diffusion noise) makes the *inference path
-itself* tolerant of corruption: ``x̃`` is the α-stable forward applied at a **low t**
-(the SNR ≥ 1 region, ᾱ_t ≥ 0.5, so the label is still recoverable), classified at the
-head's ``t = 0`` conditioning — deployment never knows the noise level.  CE keeps the
-noisy prediction correct; the KL term pulls it toward the model's own clean
-prediction.  Without it the α-stable branch only regularises the trunk *indirectly*
-through the score head, and the classifier never sees a heavy-tailed window.
-
-The robust pass reuses the score pass's ``c_in`` scaling: unlike the finite-variance
-jump-diffusion, an α-stable draw can be enormous even at low ``t``, and an unscaled
-window would blow up the trunk.  ``c_in`` is a single per-sample scalar, so it only
-changes the window's contrast, not its pattern.
-
-Model selection and early stopping are on **trend-head macro-F1** (feature-only), not
-the score loss; train and val F1 are both logged so the noise-fitting gap is visible,
-alongside ``noisy_val_f1`` — macro-F1 on α-stable-noised validation windows, the
-robustness metric ``L_robust`` is trying to move.
+Model selection / early stopping on **trend-head macro-F1** (feature-only); train and
+val F1 are both logged so the noise-fitting gap is visible.
 
 Modes:
   * default    — joint (all three losses each step).
-  * --baseline — plain classifier: ``L_cls`` only, no diffusion / robustness losses.
+  * --baseline — plain classifier: ``L_cls`` only.
 
 Usage::
 
-    uv run python -m stocks.feishu.train_alphastablelob configs/stocks/feishu/alphastablelob_ofi.json
-    uv run python -m stocks.feishu.train_alphastablelob ... --alpha 1.5
-    uv run python -m stocks.feishu.train_alphastablelob ... --baseline
+    uv run python -m crypto.train_gaussgatelob configs/crypto/coinbase/gaussgatelob/btcirt_ofi_k10.json
+    uv run python -m crypto.train_gaussgatelob ... --baseline
 """
 
 from __future__ import annotations
@@ -66,8 +59,9 @@ from sklearn.metrics import classification_report, f1_score
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from models.alphastable import AlphaStableDiffusion
-from models.alphastablelob import AlphaStableLOB, count_parameters
+from crypto.dataset import build_datasets
+from models.gaussgatelob import GaussGateLOB, count_parameters
+from models.gaussian import GaussianDiffusion
 from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
@@ -77,20 +71,25 @@ from utils.training import (
     seed_worker,
     set_seed,
 )
-from stocks.feishu.build import build_datasets, discover_symbols
-from stocks.feishu.features import n_features as feishu_n_features
 
 
-def _low_t_indices(diff, device: torch.device) -> torch.Tensor:
-    """Timesteps where signal dominates noise (ᾱ_t ≥ 0.5) — the noise levels the robust
-    classification pass draws from, so the trend label is still recoverable from ``x̃``.
+def _build_diffusion(config: dict, device: torch.device) -> GaussianDiffusion:
+    """Gaussian forward process from the flat repo config.
 
-    ``diff.sqrt_abar`` is ``√ᾱ_t`` on the cosine schedule, hence the square.  Same
-    SNR ≥ 1 criterion as ``crypto.train_jumpgatelob._low_t_indices`` on its VP schedule.
+    Reads the *same* schedule keys as ``crypto.train_jumpgatelob`` (``schedule``,
+    ``T_max``, ``beta_start``/``beta_end`` for VP, ``ve_sigma_*`` for VE) so the two
+    runs are on an identical noise schedule; the ``levy_*`` jump keys have no
+    counterpart here and are simply absent.
     """
-    mask = (diff.sqrt_abar.to(device) ** 2) >= 0.5
-    idx = torch.nonzero(mask, as_tuple=False).flatten()
-    return idx if len(idx) > 0 else torch.zeros(1, dtype=torch.long, device=device)
+    return GaussianDiffusion(
+        num_timesteps=config.get("T_max", 1000),
+        schedule=config.get("schedule", "vp"),
+        beta_start=config.get("beta_start", 1e-4),
+        beta_end=config.get("beta_end", 0.02),
+        sigma_min=config.get("ve_sigma_min", 1e-2),
+        sigma_max=config.get("ve_sigma_max", 50.0),
+        device=device,
+    )
 
 
 def _train_epoch(
@@ -115,23 +114,22 @@ def _train_epoch(
         logits = model.classify(x0)
         cls_loss = F.cross_entropy(logits, label, label_smoothing=label_smoothing)
         loss = cls_loss
-        score_loss = rob_loss = torch.zeros((), device=device)
+        score_loss = rob_loss = x0.new_zeros(())
 
         if do_diff:
-            # generalized score matching on the α-stable kernel
+            # score matching on the Gaussian kernel (closed-form target)
             t = torch.randint(0, t_max, (b,), device=device)
-            x_t, u, c_in = diff.add_noise(x0, t)
-            s_target = diff.score_target(u, t)
-            s_hat = model.score(c_in * x_t, t)
-            score_loss = F.mse_loss(s_hat, s_target)
+            x_t, _ = diff.add_noise(x0, t)
+            s_target = diff.score_target(x_t, x0, t)
+            s_hat = model.score(x_t, t)
+            w = diff.mean_W(t)  # σ_t² — keeps the weighted target O(1)
+            score_loss = (w * ((s_hat - s_target) ** 2).flatten(1).mean(1)).mean()
 
-            # noise-consistent classification: heavy-tailed low-t windows, classified
-            # at t=0 conditioning (deployment never knows the noise level).  c_in is
-            # the same EDM input scale the score pass uses — an α-stable draw can be
-            # enormous even at low t, and an unscaled window would blow up the trunk.
+            # noise-consistent classification: noised low-t windows, classified at
+            # t=0 conditioning (deployment never knows the noise level)
             t_rob = low_t[torch.randint(0, len(low_t), (b,), device=device)]
-            x_rob, _, c_in_rob = diff.add_noise(x0, t_rob)
-            logits_rob = model.classify(c_in_rob * x_rob)
+            x_rob, _ = diff.add_noise(x0, t_rob)
+            logits_rob = model.classify(x_rob)
             rob_ce = F.cross_entropy(logits_rob, label, label_smoothing=label_smoothing)
             rob_con = F.kl_div(
                 F.log_softmax(logits_rob, dim=1),
@@ -183,7 +181,7 @@ def _f1_ce_acc(model, loader, device, max_batches=None):
 
 @torch.no_grad()
 def _noisy_f1(model, diff, low_t, loader, device, max_batches=None):
-    """Macro-F1 on α-stable-noised low-t windows — the robustness metric the
+    """Macro-F1 on Gaussian-noised low-t windows — the robustness metric the
     noise-consistency loss is trying to move."""
     model.eval()
     y_true, y_pred = [], []
@@ -192,8 +190,8 @@ def _noisy_f1(model, diff, low_t, loader, device, max_batches=None):
             break
         x0 = batch["x"].to(device).float()
         t_rob = low_t[torch.randint(0, len(low_t), (x0.shape[0],), device=device)]
-        x_rob, _, c_in = diff.add_noise(x0, t_rob)
-        logits = model.classify(c_in * x_rob)
+        x_rob, _ = diff.add_noise(x0, t_rob)
+        logits = model.classify(x_rob)
         y_true.extend(batch["label"].tolist())
         y_pred.extend(logits.argmax(1).cpu().tolist())
     return float(
@@ -234,14 +232,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        default="configs/stocks/feishu/alphastablelob_ofi.json",
-    )
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=None,
-        help="stability index in (0,2] (override config['astable_alpha']); "
-        "smaller ⇒ heavier tails, 2.0 = Gaussian",
+        default="configs/crypto/coinbase/gaussgatelob/btcirt_ofi_k10.json",
     )
     parser.add_argument(
         "--baseline",
@@ -255,9 +246,6 @@ def main() -> None:
         logger.error("config not found: {}", config_path)
         sys.exit(1)
     config = json.loads(config_path.read_text())
-    if args.alpha is not None:
-        config["astable_alpha"] = args.alpha
-    alpha = float(config.get("astable_alpha", 1.7))
 
     seed = resolve_seed(config)
     config["seed"] = seed
@@ -265,62 +253,39 @@ def main() -> None:
 
     device = resolve_device(config["device"])
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    mode = "baseline" if args.baseline else "joint"
+    mode = "baseline" if args.baseline else "gaussian"
     ckpt_dir = (
         Path(config["checkpoint_dir"])
-        / f"alphastablelob_{mode}_a{alpha}_{config.get('feature_mode', 'ofi')}_{stamp}"
+        / f"gaussgatelob_{mode}_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     logger.add(ckpt_dir / "train.log", level="DEBUG")
 
-    data_dir = Path(config["data_dir"])
-    symbols = discover_symbols(data_dir, config)
-    config["n_features"] = feishu_n_features(config)
-
-    logger.info(
-        "AlphaStableLOB [Feishu]  mode={} alpha={}  symbols={}",
-        mode,
-        alpha,
-        len(symbols),
-    )
-
-    train_ds, val_ds, test_ds, meta = build_datasets(config, data_dir, symbols)
+    train_ds, val_ds, test_ds, alpha, meta = build_datasets(config)
+    config["n_features"] = meta["n_features"]
     cb = meta["class_balance"]
+
     logger.info(
-        "  windows  train={}  val={}  test(out-of-sample)={}",
-        len(train_ds),
-        len(val_ds),
-        len(test_ds),
+        "GaussGateLOB  symbol={} mode={} (Gaussian score-matching + noise-consistency)",
+        config["symbol"],
+        mode,
     )
+    logger.info("  windows train={} val={} test={}", *meta["counts"].values())
     logger.info(
-        "  label_alpha={:.6f}  down={:.1%} stat={:.1%} up={:.1%}",
-        config.get("alpha", 0.015),
+        "  label_thr={:.6f}  down={:.1%} flat={:.1%} up={:.1%}",
+        alpha,
         cb["down"],
         cb["stationary"],
         cb["up"],
     )
 
-    model = AlphaStableLOB(config).to(device)
-    d = config["T_past"] * config["n_features"]
-    diff = AlphaStableDiffusion(
-        d=d,
-        num_timesteps=config.get("T_max", 1000),
-        alpha=alpha,
-        cosine_s=config.get("cosine_s", 0.008),
-        num_r=config.get("astable_num_r", 256),
-        mc_samples=config.get("astable_mc", 8192),
-        clip_q=config.get("astable_clip_q", 0.999),
-        seed=seed,
-        device=device,
-    )
-    low_t = _low_t_indices(diff, device)
+    model = GaussGateLOB(config).to(device)
+    diff = _build_diffusion(config, device)
+    low_t = diff.low_t_indices(device)
     logger.info(
-        "  params={:.2f}M  gflops/sample={:.3f}  lambda_diff={} mu_robust={}"
-        "  low-t region: {} steps (≤ t={})  device={}",
+        "  params={:.2f}M  gflops/sample={:.3f}  low-t region: {} steps (≤ t={})  device={}",
         count_parameters(model) / 1e6,
         log_gflops(model, train_ds, device),
-        config.get("lambda_diff", 1.0),
-        config.get("mu_robust", 0.5),
         len(low_t),
         int(low_t.max()),
         device,
@@ -348,7 +313,7 @@ def main() -> None:
     )
     lr_sched = build_cosine_schedule(optimizer, config, epochs * len(train_loader))
 
-    best, history = float("-inf"), []
+    best, patience, history = float("-inf"), 0, []
     for epoch in range(epochs):
         tr = _train_epoch(
             model,
@@ -389,18 +354,22 @@ def main() -> None:
         )
         history.append(row)
 
-        # model selection on the held-out in-sample val slice (highest macro-F1)
         if val_f1 > best:
-            best = val_f1
+            best, patience = val_f1, 0
             torch.save(
                 {
                     "model": model.state_dict(),
                     "config": config,
-                    "label_alpha": config.get("alpha", 0.015),
+                    "alpha": alpha,
                     "epoch": epoch,
                 },
                 ckpt_dir / "best.pt",
             )
+        else:
+            patience += 1
+            if patience >= config["patience"]:
+                logger.info("early stopping at epoch {}", epoch)
+                break
 
     (ckpt_dir / "config.json").write_text(json.dumps(config, indent=2))
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
@@ -409,11 +378,7 @@ def main() -> None:
     metrics = run_test(model, test_ds, config, device)
     report = _per_class_report(model, test_ds, config, device)
     (ckpt_dir / "metrics.json").write_text(
-        json.dumps(
-            {"out_of_sample": metrics, "per_class": report},
-            indent=2,
-            default=str,
-        )
+        json.dumps({"test": metrics, "per_class": report}, indent=2, default=str)
     )
 
 

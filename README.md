@@ -15,8 +15,10 @@ established **discriminative baselines** alongside the joint models for comparis
 - **Joint generative–discriminative models:** JointDiT (Diffusion Transformer, with
   five training objectives — DDPM, consistency, t-EDM, drift, Lévy — plus a two-phase
   probe), JumpGateLOB (jump-diffusion score matching + noise-consistent classification,
-  feature-only inference), and AlphaStableLOB (the same trunk with a genuine α-stable,
-  power-law-tailed forward process).
+  feature-only inference), AlphaStableLOB (the same trunk with a genuine α-stable,
+  power-law-tailed forward process), and GaussGateLOB (the same trunk again with plain
+  Gaussian noise and the closed-form score — the control the two heavy-tailed kernels
+  are measured against).
 - **Discriminative baselines:** DeepLOB, CTABL, BiN-CTABL, TLOB, DLA, Axial-LOB.
 
 See **[docs/models](docs/models/README.md)** for every model, **[docs/data](docs/data/README.md)**
@@ -30,10 +32,11 @@ StochLOB uses one shared LOB sequence encoder with two training roles. A normali
 LOB window first follows the clean classifier path: feature normalization, temporal
 sequence encoding, attention-based aggregation, and a three-class trend head for
 `down / flat / up` prediction. During training, a second branch corrupts the same
-window with non-Gaussian noise and trains a score head to denoise it. The Levy
-variant uses compound-Poisson jump corruption; the alpha-stable variant uses clipped
-heavy-tailed scale-mixture corruption. At inference time the corruption sampler and
-score head are disabled, so prediction is a single clean-window forward pass through
+window with noise and trains a score head to denoise it. The Levy variant uses
+compound-Poisson jump corruption; the alpha-stable variant uses clipped heavy-tailed
+scale-mixture corruption; the Gaussian variant uses plain Brownian corruption with the
+closed-form score, as the control for the other two. At inference time the corruption
+sampler and score head are disabled, so prediction is a single clean-window forward pass through
 the classifier.
 
 ## Setup
@@ -101,6 +104,9 @@ uv run python -m crypto.train_jumpgatelob    configs/crypto/coinbase/jumpgatelob
 
 # α-stable joint model (heavy, power-law-tailed Lévy noise + generalized score matching)
 uv run python -m crypto.train_alphastablelob configs/crypto/coinbase/alphastablelob/btcirt_ofi_k10.json
+
+# Gaussian control for the two above (same trunk/objective, closed-form score)
+uv run python -m crypto.train_gaussgatelob   configs/crypto/coinbase/gaussgatelob/btcirt_ofi_k10.json
 ```
 
 Each run builds/loads the feature cache, trains with early stopping, restores the best
@@ -143,7 +149,8 @@ Per-topic files:
   [BiN-CTABL](docs/models/binctabl.md) · [TLOB](docs/models/tlob.md) ·
   [DLA](docs/models/dla.md) · [Axial-LOB](docs/models/axiallob.md) ·
   [JointDiT](docs/models/jointdit.md) · [JumpGateLOB](docs/models/jumpgatelob.md) ·
-  [AlphaStableLOB](docs/models/alphastablelob.md) . [OFSAT-NET](docs/models/ofsatnet.md)
+  [AlphaStableLOB](docs/models/alphastablelob.md) ·
+  [GaussGateLOB](docs/models/gaussgatelob.md) · [OFSAT-NET](docs/models/ofsatnet.md)
 - XAI: [attribution](docs/xai/attribution.md) · [faithfulness](docs/xai/faithfulness.md) ·
   [probes](docs/xai/probes.md) · [CKA](docs/xai/cka.md) ·
   [agreement](docs/xai/agreement.md) · [gate sweep](docs/xai/gate-sweep.md) ·

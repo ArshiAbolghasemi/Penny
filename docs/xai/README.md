@@ -113,6 +113,7 @@ meaningful and the checkpoints are settled:
 | **DLA** | ✅ | LSTM dual-stage attention — the only model attending over input features |
 | **JumpGateLOB** | ✅ | diffusion-conditioned GRU+attention — carries the adaLN-Zero gates |
 | AlphaStableLOB | ❌ | shares JumpGateLOB's trunk; adds nothing to the comparison |
+| GaussGateLOB | ❌ | same — JumpGateLOB's trunk with a Gaussian forward process |
 | JointDiT | ❌ | excluded by team decision — not part of the explainability story |
 
 Only the `k=10` horizon is analysed in this phase.

@@ -8,7 +8,8 @@ tails of high-frequency LOB returns.
 
 Unlike the finite-variance "Lévy" jump-diffusion in [JumpGateLOB](jumpgatelob.md) (a
 compound-Poisson Gaussian scale mixture, *finite* variance, exponential tails), this is
-**true α-stable** noise — the `α<2` regime with genuinely divergent variance.
+**true α-stable** noise — the `α<2` regime with genuinely divergent variance. The
+Gaussian end of the same spectrum is [GaussGateLOB](gaussgatelob.md).
 
 - **References:** α-stable diffusion / subordinated-Gaussian representation (Samorodnitsky
   & Taqqu; Kanter 1975 sampler); generalized score matching for Gaussian scale mixtures
@@ -80,18 +81,39 @@ flowchart TD
 ## Training objective
 
 Joint, with **separate passes** so the trend head always sees the clean-window
-distribution it will see at inference:
+distribution it will see at inference. Three terms, all active by default:
 
 ```
-L_cls   = CE(classify(x₀), label)                     # clean pass, t = 0
-L_score = ‖ ŝ(c_in·x_t, t) − ∇log q(x_t|x₀) ‖²         # generalized score matching
-L       = L_cls + λ_diff · L_score
+L_cls    = CE(classify(x₀), label)                     # clean pass, t = 0
+L_score  = ‖ ŝ(c_in·x_t, t) − ∇log q(x_t|x₀) ‖²        # generalized score matching
+L_robust = CE(classify(c_in·x̃), label)                 # α-stable-noised low-t pass
+         + robust_kl · KL( p(x̃) ‖ p(x₀).detach() )     # clean/noisy consistency
+L        = L_cls + λ_diff·L_score + μ_robust·L_robust
 ```
 
 The score target `−u·h(|u|)` is bounded (the score of a heavy-tailed law decays), so a
 plain MSE on the score is well-behaved even though the *noise* has infinite variance.
+
+**`L_robust`** is the same noise-consistency term [JumpGateLOB](jumpgatelob.md) uses,
+here driven by **heavy-tailed** rather than jump-diffusion noise, and configured
+identically (`mu_robust`, `robust_kl` carry the Lévy model's values). `x̃` is the
+α-stable forward applied at a **low `t`** — the SNR ≥ 1 region, `ᾱ_t ≥ 0.5`, so the
+label is still recoverable — classified at the head's `t = 0` conditioning, because
+deployment never knows the noise level. CE keeps the noisy prediction correct; the KL
+term pulls it toward the model's own clean prediction. Without it the α-stable branch
+regularises the trunk only *indirectly* through the score head, and the classifier
+itself never sees a heavy-tailed window.
+
+The robust pass reuses the score pass's `c_in` scaling. Unlike the finite-variance
+jump-diffusion, an α-stable draw can be enormous even at low `t` — on z-scored features
+the raw low-`t` window runs several times the clean window's magnitude — and an
+unscaled input would blow up the trunk; `c_in` is a single per-sample scalar, so it
+changes the window's contrast, not its pattern.
+
 Model selection and early stopping are on **trend-head macro-F1** (feature-only), not
-the score loss; `--baseline` runs `L_cls` only. `--alpha` overrides the tail index.
+the score loss. Each epoch also logs `noisy_val_f1` — macro-F1 on α-stable-noised
+validation windows, the robustness metric `L_robust` is trying to move. `--baseline`
+runs `L_cls` only (no diffusion, no robustness); `--alpha` overrides the tail index.
 
 ## I/O
 
@@ -104,6 +126,8 @@ the score loss; `--baseline` runs `L_cls` only. `--alpha` overrides the tail ind
 Tail / diffusion: `astable_alpha` (stability index, `2.0` = Gaussian, smaller = heavier
 tails), `T_max`, `cosine_s`, `astable_num_r`, `astable_mc`, `astable_clip_q`,
 `lambda_diff`.
+Robustness: `mu_robust` (weight on `L_robust`), `robust_kl` (weight on the
+clean/noisy KL inside it) — same values as the Lévy model's configs.
 Trunk: `astable_local` (`gru`/`conv`), `astable_gru_hidden`, `astable_gru_layers`,
 `astable_bidirectional`, `astable_attn_heads`, `astable_diff_channels`,
 `astable_diff_blocks`, `astable_feat_mix` (`conv`/`attn`), `astable_time_emb`,

@@ -66,7 +66,10 @@ W = σ_t²  +  Σ_{k=1}^{N} S_k ,   N ~ Poisson(Λ_t) ,   S_k ~ Gamma(shape, sca
 look like market microstructure noise *and* discrete jump events. Because the kernel
 is a scale mixture, its isotropic score collapses to a precomputed 1-D table:
 `∇log q(x_t|x₀) = −u·h(|u|)`, `h(r) = E[1/W | r]` (Monte-Carlo over `W`).
-`Λ_t = 0` recovers the exact Gaussian score — the `--process gaussian` ablation.
+`Λ_t = 0` recovers the exact Gaussian score — the `--process gaussian` ablation, also
+available as the standalone [GaussGateLOB](gaussgatelob.md) (same architecture, its own
+configs and checkpoints). Pushing the tails the other way — infinite variance — gives
+[AlphaStableLOB](alphastablelob.md).
 
 ## Training objective
 

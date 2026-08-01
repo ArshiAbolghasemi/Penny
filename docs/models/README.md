@@ -58,6 +58,12 @@ Each run writes `best.pt`, `config.json` and `training_log.json` to a timestampe
 | **JointDiT** | Diffusion Transformer trained to jointly denoise + classify; ships with five training objectives (DDPM, consistency, t-EDM, drift, Lévy) plus a two-phase probe variant | [jointdit.md](jointdit.md) |
 | **JumpGateLOB** | Jump-diffusion score matching + noise-consistent classification — simple GRU+attention trunk trained to stay accurate on noisy / jump-bearing windows | [jumpgatelob.md](jumpgatelob.md) |
 | **AlphaStableLOB** | JumpGateLOB's GRU+attention trunk with a genuine **α-stable** (Lévy-stable, power-law-tailed) forward process, trained by generalized score matching | [alphastablelob.md](alphastablelob.md) |
+| **GaussGateLOB** | The same trunk and objective with **plain Gaussian** noise and the closed-form score — the controlled reference the two heavy-tailed kernels are measured against | [gaussgatelob.md](gaussgatelob.md) |
+
+The last three share one architecture and one three-term objective (clean CE +
+score matching + noise-consistency) and differ **only in the corruption law** —
+Gaussian, finite-variance jump-diffusion, or α-stable — so their trend metrics are
+directly attributable to the noise kernel.
 
 ## Shared building blocks
 
@@ -67,12 +73,13 @@ and the cross-level `LevelAttention` used by the joint diffusion models.
 
 The diffusion machinery behind the joint models:
 
-- `models/ddpm.py` — minimal linear-β DDPM scheduler.
+- `models/ddpm.py` — minimal linear-β DDPM scheduler (ε-prediction, for JointDiT).
+- `models/gaussian.py` — Gaussian forward process + **closed-form** score (VP/VE).
 - `models/alphastable.py` — α-stable (Lévy-stable) forward process + tabulated generalized score.
 - `models/consistency.py` — EDM/Karras preconditioning + Consistency-Training helpers.
 - `models/drift.py` — one-step "Generative Modeling via Drifting" loss + memory bank.
 - `models/probe.py` — backbone-agnostic two-phase (generative → frozen-trunk probe) machinery.
 - `src/levy/` — Lévy jump-diffusion forward process + tabulated generalized score.
 
-These are documented in context within [jointdit.md](jointdit.md) and
-[jumpgatelob.md](jumpgatelob.md).
+These are documented in context within [jointdit.md](jointdit.md),
+[jumpgatelob.md](jumpgatelob.md) and [gaussgatelob.md](gaussgatelob.md).
