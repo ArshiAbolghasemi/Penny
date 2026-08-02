@@ -125,8 +125,15 @@ from models.logreg import LogReg  # noqa: E402
 from models.ofsatnet import OFSATNet  # noqa: E402
 from models.gaussgatelob import GaussGateLOB  # noqa: E402
 
+if os.getenv("PENNY_DISABLE_CUDNN", "").strip().lower() in {"1", "true", "yes"}:
+    # DeepLOB contains an LSTM. Keep CUDA available but route the LSTM through
+    # PyTorch's non-cuDNN implementation on hosts where cuDNN cannot initialise.
+    torch.backends.cudnn.enabled = False
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("device:", DEVICE)
+if DEVICE.type == "cuda" and not torch.backends.cudnn.enabled:
+    print("cuDNN disabled via PENNY_DISABLE_CUDNN; CUDA inference may be slower")
 
 
 # --- figure output ------------------------------------------------------------
@@ -283,7 +290,11 @@ def load_ckpt(path: str):
     p = Path(path)
     if p.is_dir():
         p = p / "best.pt"
-    return torch.load(p, map_location=DEVICE, weights_only=False)
+    # Keeping the checkpoint state dict on CPU avoids holding two copies of
+    # every model on the GPU while `cls(...).to(DEVICE)` is initialising it.
+    # This is especially important for DeepLOB, whose LSTM initialises cuDNN
+    # weights during `.to(DEVICE)`.
+    return torch.load(p, map_location="cpu", weights_only=False)
 
 
 def build_model(tag: str, ckpt: dict):
@@ -389,7 +400,7 @@ for k in HORIZONS:
         acc = (yt == yp).mean()
         f1 = f1_score(yt, yp, average="macro", labels=[0, 1, 2], zero_division=0)
         print(f"  {DISPLAY[tag]:<24} acc={acc:.4f}  macro_f1={f1:.4f}")
-        del model
+        del ckpt, model
         if DEVICE.type == "cuda":
             torch.cuda.empty_cache()
 
