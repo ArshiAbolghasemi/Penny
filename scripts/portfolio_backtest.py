@@ -50,6 +50,12 @@ import torch
 import torch.nn as nn
 
 warnings.filterwarnings("ignore")
+
+# Figures are written as vector PDF. Type-42 (TrueType) keeps the text selectable
+# and embeddable, unlike matplotlib's default Type-3 fonts, which many venues reject.
+plt.rcParams["pdf.fonttype"] = 42
+plt.rcParams["ps.fonttype"] = 42
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s  %(message)s",
@@ -1193,9 +1199,9 @@ def plot_report(tag, daily_df, metrics, cfg):
 
     fig.suptitle(f"OOS backtest report — {tag}", y=1.01)
     plt.tight_layout()
-    out_png = PROJECT_ROOT / "outputs" / f"backtest_report_oos_{tag}.png"
-    plt.savefig(out_png, dpi=150, bbox_inches="tight")
-    print(f"saved → {out_png}")
+    out_pdf = PROJECT_ROOT / "outputs" / f"backtest_report_oos_{tag}.pdf"
+    plt.savefig(out_pdf, bbox_inches="tight")
+    print(f"saved → {out_pdf}")
     plt.show()
 
 
@@ -1213,9 +1219,9 @@ ax.set_title("OOS portfolio value — all models")
 ax.legend(fontsize=8, ncol=2)
 ax.grid(alpha=0.3)
 plt.tight_layout()
-out_png = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison.png"
-plt.savefig(out_png, dpi=150, bbox_inches="tight")
-print(f"saved → {out_png}")
+out_pdf = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison.pdf"
+plt.savefig(out_pdf, bbox_inches="tight")
+print(f"saved → {out_pdf}")
 plt.show()
 
 # cross-model comparison: cumulative return (%), all models overlaid — same
@@ -1232,9 +1238,9 @@ ax.set_title("OOS cumulative return — all models")
 ax.legend(fontsize=8, ncol=2)
 ax.grid(alpha=0.3)
 plt.tight_layout()
-out_png = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison_returns.png"
-plt.savefig(out_png, dpi=150, bbox_inches="tight")
-print(f"saved → {out_png}")
+out_pdf = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison_returns.pdf"
+plt.savefig(out_pdf, bbox_inches="tight")
+print(f"saved → {out_pdf}")
 plt.show()
 
 # cross-model comparison: daily-return distributions, all models overlaid.
@@ -1255,9 +1261,9 @@ ax.set_title("OOS daily return distribution — all models")
 ax.legend(fontsize=8, ncol=2)
 ax.grid(alpha=0.3)
 plt.tight_layout()
-out_png = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison_return_dist.png"
-plt.savefig(out_png, dpi=150, bbox_inches="tight")
-print(f"saved → {out_png}")
+out_pdf = PROJECT_ROOT / "outputs" / "backtest_report_oos_comparison_return_dist.pdf"
+plt.savefig(out_pdf, bbox_inches="tight")
+print(f"saved → {out_pdf}")
 plt.show()
 
 for tag, pm in PM.items():
