@@ -226,3 +226,4 @@ logs
 .DS_store
 
 *.bak
+/outputs
