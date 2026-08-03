@@ -27,6 +27,7 @@ Usage
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Callable
 
@@ -84,6 +85,38 @@ def _cache_paths(config: dict, tag: str) -> dict[str, Path]:
     }
 
 
+def _expected_feat_bytes(n_rows: int, n_features: int) -> int:
+    return int(n_rows) * int(n_features) * np.dtype(np.float32).itemsize
+
+
+def _has_valid_feature_file(path: Path, n_rows: int, n_features: int) -> bool:
+    """The feature cache is a raw float32 memmap despite the historical .npy suffix."""
+    try:
+        return path.stat().st_size == _expected_feat_bytes(n_rows, n_features)
+    except OSError:
+        return False
+
+
+def _check_cache_space(path: Path, n_rows: int, n_features: int) -> None:
+    """Fail before cache construction if the target filesystem is clearly too small.
+
+    Running out of space while writing through ``np.memmap`` can terminate Python
+    with SIGBUS ("Bus error") instead of raising a catchable exception. The cache
+    build below therefore writes from normal arrays, but this preflight still
+    gives a direct error on ordinary low-space filesystems.
+    """
+    required = _expected_feat_bytes(n_rows, n_features)
+    # Include mid/ts arrays and temporary headroom for metadata/filesystem blocks.
+    required = int(required * 1.25 + n_rows * (np.dtype(np.float64).itemsize + np.dtype(np.int64).itemsize))
+    free = shutil.disk_usage(path).free
+    if free < required:
+        raise OSError(
+            f"not enough free space to build crypto cache in {path}: "
+            f"need about {required / 2**20:.1f} MiB, have {free / 2**20:.1f} MiB. "
+            "Use a cache_dir on a larger local disk or remove stale cache files."
+        )
+
+
 def build_cache(
     config: dict,
     extract_features_fn: Callable,
@@ -111,6 +144,12 @@ def build_cache(
         mid = np.load(paths["mid"])
         ts = np.load(paths["ts"])
         N = len(mid)
+        if not _has_valid_feature_file(paths["feat"], N, F):
+            raise OSError(
+                f"invalid feature cache size for {paths['feat']} "
+                f"(expected {_expected_feat_bytes(N, F)} bytes for shape {(N, F)}). "
+                "Remove the stale .feat.npy/.mid.npy/.ts.npy files and rerun."
+            )
         feat = np.memmap(paths["feat"], dtype=np.float32, mode="r", shape=(N, F))
         logger.info("loaded cache '{}': {:,} rows, {} features", tag, N, F)
         return feat, mid, ts
@@ -136,7 +175,11 @@ def build_cache(
     df["_date"] = df["timestamp_utc"].dt.date
 
     N_total = len(df)
-    feat_mm = np.memmap(paths["feat"], dtype=np.float32, mode="w+", shape=(N_total, F))
+    _check_cache_space(paths["feat"].parent, N_total, F)
+    # Build in normal RAM instead of writing through a memmap. If the cache
+    # filesystem is full or quota-limited, ordinary file writes raise OSError;
+    # memmap writes can kill the interpreter with SIGBUS ("Bus error").
+    feat_arr = np.empty((N_total, F), dtype=np.float32)
     mid_arr = np.empty(N_total, dtype=np.float64)
     ts_arr = np.empty(N_total, dtype=np.int64)
 
@@ -150,22 +193,34 @@ def build_cache(
         logger.info("  {} — {} rows", date, N_day)
 
         raw = extract_features_fn(day_df, config)  # (N_day, F) float32
-        feat_mm[ptr : ptr + N_day] = raw
+        feat_arr[ptr : ptr + N_day] = raw
         mid_arr[ptr : ptr + N_day] = day_df["mid"].values
         ts_arr[ptr : ptr + N_day] = day_df["bin"].values.astype(np.int64)
         ptr += N_day
 
     # ── Pass 2: causal trailing rolling z-score over the full time series ─────
     norm_window = int(config.get("norm_window", 2000))
-    raw_all = np.asarray(feat_mm[:ptr], dtype=np.float64)  # (ptr, F)
+    raw_all = feat_arr[:ptr].astype(np.float64, copy=False)  # (ptr, F)
     mean, std, cnt = _rolling_mean_std(raw_all, norm_window)
     # don't divide by a degenerate window: <2 candles (row 0) or ~flat feature
     std = np.where((cnt < 2) | (std < 1e-8), 1.0, std)
-    feat_mm[:ptr] = ((raw_all - mean) / std).astype(np.float32)
+    feat_arr[:ptr] = ((raw_all - mean) / std).astype(np.float32)
     del raw_all, mean, std, cnt
 
-    feat_mm.flush()
-    del feat_mm
+    tmp_feat = paths["feat"].with_suffix(paths["feat"].suffix + ".tmp")
+    try:
+        with tmp_feat.open("wb") as f:
+            feat_arr[:ptr].tofile(f)
+        tmp_feat.replace(paths["feat"])
+    except OSError as exc:
+        try:
+            tmp_feat.unlink(missing_ok=True)
+        finally:
+            raise OSError(
+                f"failed to write feature cache {paths['feat']}: {exc}. "
+                "Use a cache_dir on a local disk with enough quota/free space."
+            ) from exc
+    del feat_arr
 
     np.save(paths["mid"], mid_arr[:ptr])
     np.save(paths["ts"], ts_arr[:ptr])
