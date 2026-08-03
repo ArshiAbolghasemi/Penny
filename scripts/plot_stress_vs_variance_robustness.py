@@ -761,7 +761,9 @@ def plot_condition(
     return out
 
 
-def plot_stochastic_family(summary: pd.DataFrame, args: argparse.Namespace, out_dir: Path):
+def plot_stochastic_family(
+    summary: pd.DataFrame, args: argparse.Namespace, out_dir: Path
+):
     fam = stochastic_family_summary(summary, args)
     if fam.empty:
         raise RuntimeError("no stochastic-family rows to plot")
@@ -1064,14 +1066,14 @@ def main() -> None:
 
     trend_bins = trend_bin_rows(score_by_k, y_true_by_k, args)
     trend_bins_csv = (
-        out_dir / f"{args.symbol.lower()}_{args.feature_mode}_trend_by_condition_bin.csv"
+        out_dir
+        / f"{args.symbol.lower()}_{args.feature_mode}_trend_by_condition_bin.csv"
     )
     trend_bins.to_csv(trend_bins_csv, index=False)
 
     trend_extreme = trend_extreme_rows(score_by_k, y_true_by_k, args)
     trend_extreme_csv = (
-        out_dir
-        / f"{args.symbol.lower()}_{args.feature_mode}_trend_calm_vs_extreme.csv"
+        out_dir / f"{args.symbol.lower()}_{args.feature_mode}_trend_calm_vs_extreme.csv"
     )
     trend_extreme.to_csv(trend_extreme_csv, index=False)
 
@@ -1122,7 +1124,9 @@ def main() -> None:
     trend_pdfs: list[Path] = []
     if not args.no_trend_plots:
         for score_name in CONDITIONS:
-            trend_pdfs.append(plot_trend_condition(trend_bins, score_name, args, out_dir))
+            trend_pdfs.append(
+                plot_trend_condition(trend_bins, score_name, args, out_dir)
+            )
 
     surface_pdfs: list[Path] = []
     if not args.no_surfaces:

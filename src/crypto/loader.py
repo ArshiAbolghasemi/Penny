@@ -107,7 +107,10 @@ def _check_cache_space(path: Path, n_rows: int, n_features: int) -> None:
     """
     required = _expected_feat_bytes(n_rows, n_features)
     # Include mid/ts arrays and temporary headroom for metadata/filesystem blocks.
-    required = int(required * 1.25 + n_rows * (np.dtype(np.float64).itemsize + np.dtype(np.int64).itemsize))
+    required = int(
+        required * 1.25
+        + n_rows * (np.dtype(np.float64).itemsize + np.dtype(np.int64).itemsize)
+    )
     free = shutil.disk_usage(path).free
     if free < required:
         raise OSError(
