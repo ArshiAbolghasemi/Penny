@@ -439,112 +439,157 @@ if not metrics_df.empty:
         print(f"\n=== {metric} (rows=model, cols=horizon k) ===")
         display(piv.style.background_gradient(cmap="YlGn", axis=None).format("{:.4f}"))
 
-"""### 4b. McNemar's test — accuracy vs every other model (JumpGateLOB & AlphaStableLOB)
+"""### 4b. Dependence-aware paired testing — accuracy and macro-F1
 
-Paired significance test on **clean test-set accuracy** for the two diffusion
-models only (`jumpgatelob`, `alphastablelob_1.5`), each compared against every
-other model in the registry. All models are scored on the **same** test windows
-(identical `y_true`, asserted at eval time), so McNemar is the right test: it
-looks only at the **discordant** windows — where exactly one of the two models
-is correct — and asks whether that split departs from 50/50.
-
-- `n01` = target right, other wrong; `n10` = target wrong, other right.
-  `acc_target − acc_other = (n01 − n10)/N`, so `n01 > n10` ⇒ target is the more
-  accurate model.
-- `H0`: the two models have equal accuracy. Small `p` ⇒ the accuracy gap is
-  unlikely to be sampling noise on these windows.
-- Exact binomial when discordant pairs are few (`< 25`), else χ²₁ with Edwards
-  continuity correction — the standard McNemar convention. Self-contained
-  (scipy only), no statsmodels dependency.
-
-BTCIRT only, per the request; not run for the other Coinbase markets.
+McNemar's test is deliberately not used here: adjacent LOB windows overlap, so
+per-window correctness indicators are serially dependent and the usual McNemar
+independence assumption would overstate significance. For BTCIRT we instead compare
+the diffusion targets against every other model with circular block-bootstrap
+confidence intervals. The block length is tied to the horizon and the empirical
+autocorrelation time of target correctness. A two-sided bootstrap sign p-value is
+reported for the paired difference.
 """
 
-from scipy.stats import binom, chi2  # noqa: E402
-
-MCN_TARGETS = ("jumpgatelob", "alphastablelob_1.5")
-
-
-def mcnemar_accuracy(yp_a, yp_b, yt):
-    """Paired McNemar test on per-window correctness of two models scored on the
-    SAME test windows. Returns (n01, n10, stat, p, method):
-      n01 = A right & B wrong,  n10 = A wrong & B right   (discordant pairs).
-    acc_A - acc_B = (n01 - n10)/N, so n01 > n10 ⇒ A more accurate. Exact binomial
-    for few discordant pairs (<25), else χ²₁ with Edwards continuity correction.
-    """
-    a = yp_a == yt
-    b = yp_b == yt
-    n01 = int(np.sum(a & ~b))
-    n10 = int(np.sum(~a & b))
-    n = n01 + n10
-    if n == 0:
-        return n01, n10, 0.0, 1.0, "identical"
-    if n < 25:
-        p = min(1.0, 2.0 * binom.cdf(min(n01, n10), n, 0.5))
-        return n01, n10, float("nan"), float(p), "exact"
-    stat = (abs(n01 - n10) - 1.0) ** 2 / n
-    return n01, n10, float(stat), float(chi2.sf(stat, 1)), "chi2_cc"
+BOOT_TARGETS = ("jumpgatelob", "alphastablelob_1.5")
+PAIR_BOOT = 2000
+STAT_SEED = 20260802
 
 
-mcn_targets = [t for t in MCN_TARGETS if any((t, k) in RESULTS for k in HORIZONS)]
-mcn_others = [m for m in MODELS if m not in MCN_TARGETS]
+def _integrated_ac_time_local(x, max_lag=250):
+    x = np.asarray(x, dtype=float)
+    x = x[np.isfinite(x)]
+    if len(x) < 5:
+        return 1.0
+    x = x - x.mean()
+    denom = float(np.dot(x, x))
+    if denom <= 1e-24:
+        return 1.0
+    tau = 1.0
+    for lag in range(1, min(max_lag, len(x) - 1) + 1):
+        rho = float(np.dot(x[lag:], x[:-lag]) / denom)
+        if rho <= 0:
+            break
+        tau += 2.0 * rho
+    return float(max(tau, 1.0))
 
-mcn_rows = []
-for tgt in mcn_targets:
-    for oth in mcn_others:
+
+def _circular_block_indices(n, block, rng):
+    block = int(max(1, min(block, n)))
+    n_blocks = int(np.ceil(n / block))
+    starts = rng.integers(0, n, n_blocks)
+    return np.concatenate([(np.arange(s, s + block) % n) for s in starts])[:n]
+
+
+def _paired_metrics(yt, yp_a, yp_b):
+    return {
+        "d_acc": float(np.mean(yp_a == yt) - np.mean(yp_b == yt)),
+        "d_macro_f1": float(
+            f1_score(yt, yp_a, average="macro", labels=[0, 1, 2], zero_division=0)
+            - f1_score(yt, yp_b, average="macro", labels=[0, 1, 2], zero_division=0)
+        ),
+    }
+
+
+def _paired_block_bootstrap(yt, yp_a, yp_b, block, n_boot=PAIR_BOOT, seed=0):
+    yt, yp_a, yp_b = map(np.asarray, (yt, yp_a, yp_b))
+    n = len(yt)
+    rng = np.random.default_rng(seed)
+    vals = {"d_acc": np.empty(n_boot), "d_macro_f1": np.empty(n_boot)}
+    for i in range(n_boot):
+        idx = _circular_block_indices(n, block, rng)
+        m = _paired_metrics(yt[idx], yp_a[idx], yp_b[idx])
+        vals["d_acc"][i] = m["d_acc"]
+        vals["d_macro_f1"][i] = m["d_macro_f1"]
+    out = {}
+    for key, arr in vals.items():
+        lo, hi = np.percentile(arr, [2.5, 97.5])
+        p = 2.0 * min(float(np.mean(arr <= 0.0)), float(np.mean(arr >= 0.0)))
+        out[key] = {
+            "mean": float(arr.mean()),
+            "lo": float(lo),
+            "hi": float(hi),
+            "p": float(min(1.0, p)),
+        }
+    return out
+
+
+boot_targets = [t for t in BOOT_TARGETS if any((t, k) in RESULTS for k in HORIZONS)]
+boot_others = [m for m in MODELS if m not in BOOT_TARGETS]
+
+pair_rows = []
+for tgt in boot_targets:
+    for oth in boot_others:
         for k in HORIZONS:
             if (tgt, k) not in RESULTS or (oth, k) not in RESULTS:
                 continue
             rt, ro = RESULTS[(tgt, k)], RESULTS[(oth, k)]
             yt = rt["y_true"]
-            n01, n10, stat, p, method = mcnemar_accuracy(rt["y_pred"], ro["y_pred"], yt)
-            acc_t = float((rt["y_pred"] == yt).mean())
-            acc_o = float((ro["y_pred"] == yt).mean())
-            mcn_rows.append(
+            if not np.array_equal(yt, ro["y_true"]):
+                raise AssertionError(f"{tgt} and {oth} have different y_true for k={k}")
+            corr_diff = (rt["y_pred"] == yt).astype(float) - (
+                ro["y_pred"] == yt
+            ).astype(float)
+            block = int(max(k, np.ceil(_integrated_ac_time_local(corr_diff)), 1))
+            obs = _paired_metrics(yt, rt["y_pred"], ro["y_pred"])
+            boot = _paired_block_bootstrap(
+                yt,
+                rt["y_pred"],
+                ro["y_pred"],
+                block,
+                seed=STAT_SEED + 17 * k + 1009 * MODELS.index(tgt) + MODELS.index(oth),
+            )
+            pair_rows.append(
                 {
-                    "target": tgt,
+                    "target": DISPLAY[tgt],
                     "vs": DISPLAY[oth],
                     "k": k,
-                    "acc_target": acc_t,
-                    "acc_other": acc_o,
-                    "d_acc_pp": (acc_t - acc_o) * 100.0,
-                    "n01": n01,
-                    "n10": n10,
-                    "p_value": p,
-                    "method": method,
-                    "sig": "yes" if p < 0.05 else "no",
-                    "better": tgt if n01 > n10 else (oth if n10 > n01 else "tie"),
+                    "block": block,
+                    "d_acc_pp": 100.0 * obs["d_acc"],
+                    "d_acc_lo_pp": 100.0 * boot["d_acc"]["lo"],
+                    "d_acc_hi_pp": 100.0 * boot["d_acc"]["hi"],
+                    "d_acc_p_boot": boot["d_acc"]["p"],
+                    "d_f1": obs["d_macro_f1"],
+                    "d_f1_lo": boot["d_macro_f1"]["lo"],
+                    "d_f1_hi": boot["d_macro_f1"]["hi"],
+                    "d_f1_p_boot": boot["d_macro_f1"]["p"],
                 }
             )
 
-mcnemar_df = pd.DataFrame(mcn_rows)
-if mcnemar_df.empty:
-    print("No McNemar results — need jumpgatelob/alphastablelob_1.5 in RESULTS.")
+pair_boot_df = pd.DataFrame(pair_rows)
+if pair_boot_df.empty:
+    print(
+        "No paired bootstrap results — need jumpgatelob/alphastablelob_1.5 in RESULTS."
+    )
 else:
-    order = [DISPLAY[o] for o in mcn_others if DISPLAY[o] in set(mcnemar_df["vs"])]
-    for tgt in mcn_targets:
-        sub = mcnemar_df[mcnemar_df["target"] == tgt]
+    order = [DISPLAY[o] for o in boot_others if DISPLAY[o] in set(pair_boot_df["vs"])]
+    for tgt in [DISPLAY[t] for t in boot_targets]:
+        sub = pair_boot_df[pair_boot_df["target"] == tgt]
         if sub.empty:
             continue
         dacc = sub.pivot(index="vs", columns="k", values="d_acc_pp").reindex(order)
-        pval = sub.pivot(index="vs", columns="k", values="p_value").reindex(order)
+        df1 = sub.pivot(index="vs", columns="k", values="d_f1").reindex(order)
+        pval = sub.pivot(index="vs", columns="k", values="d_f1_p_boot").reindex(order)
+        print(f"\n=== {tgt} — block-bootstrap paired differences (BTCIRT) ===")
         print(
-            f"\n=== {DISPLAY[tgt]} — McNemar accuracy vs each other model (BTCIRT) ==="
+            "Δaccuracy pp (target − other); block bootstrap handles overlapping windows:"
         )
-        print("Δaccuracy (percentage points, target − other); + ⇒ target better:")
         display(
             dacc.style.background_gradient(
                 cmap="RdYlGn", axis=None, vmin=-5, vmax=5
             ).format("{:+.2f}")
         )
-        print("McNemar p-value (H0: equal accuracy); green ⇒ significant at p<0.05:")
+        print("Δmacro-F1 (target − other):")
+        display(
+            df1.style.background_gradient(
+                cmap="RdYlGn", axis=None, vmin=-0.05, vmax=0.05
+            ).format("{:+.4f}")
+        )
+        print("Bootstrap sign p-value for Δmacro-F1:")
         display(
             pval.style.background_gradient(
-                cmap="RdYlGn_r", axis=None, vmin=0.0, vmax=0.1
-            ).format("{:.2e}")
+                cmap="RdYlGn_r", axis=None, vmin=0, vmax=0.1
+            ).format("{:.3f}")
         )
-    n_sig = int((mcnemar_df["sig"] == "yes").sum())
-    print(f"\n{n_sig}/{len(mcnemar_df)} comparisons significant at p<0.05.")
 
 """## 5. Confusion matrices
 
@@ -1219,6 +1264,31 @@ def _raw_case(kind, sigma):
     return _RAW_CASE_CACHE[key]
 
 
+def _case_distortion(kind, sigma):
+    """Measured distortion on normalized test features, comparable across laws."""
+    clean = _raw_case("gaussian", 0.0)["features"].astype(np.float64)
+    noisy = _raw_case(kind, sigma)["features"].astype(np.float64)
+    delta = noisy - clean
+    rel_l2 = np.linalg.norm(delta) / max(np.linalg.norm(clean), 1e-12)
+    clean_mad = np.median(
+        np.abs(clean - np.median(clean, axis=0, keepdims=True)), axis=0
+    )
+    delta_mad = np.median(np.abs(delta), axis=0)
+    mad_ratio = np.nanmedian(delta_mad / np.maximum(clean_mad, 1e-12))
+    q_clean = np.nanquantile(np.abs(clean), 0.95, axis=0)
+    q_delta = np.nanquantile(np.abs(delta), 0.95, axis=0)
+    q95_ratio = np.nanmedian(q_delta / np.maximum(q_clean, 1e-12))
+    abnormal_move_prob = float(
+        np.mean(np.abs(delta) > np.nanquantile(np.abs(clean), 0.99))
+    )
+    return {
+        "distortion_l2": float(rel_l2),
+        "distortion_mad": float(mad_ratio),
+        "distortion_q95": float(q95_ratio),
+        "abnormal_move_prob": abnormal_move_prob,
+    }
+
+
 def raw_test_set(k, kind, sigma):
     """Build a test dataset after raw corruption, feature extraction, and labeling."""
     cfg = json.loads((REPO / DATA_CONFIG.format(fm=FEATURE_MODE, k=k)).read_text())
@@ -1238,6 +1308,133 @@ def raw_test_set(k, kind, sigma):
     ds = LOBDataset(case["features"], starts_rel, labels_test, cfg["T_past"])
     y = labels[starts + cfg["T_past"] - 1]
     return ds, y, {"alpha": alpha, "starts": starts}
+
+
+"""### 7d. Real market stress tests
+
+Synthetic corruption is only one robustness view. This table uses the uncorrupted
+BTCIRT test period and slices windows by observed market stress regimes: high
+realized volatility, spread widening, liquidity drops, abnormal OFI bursts, and
+timestamp gaps that proxy exchange/data outages. Each regime is selected from the
+top or bottom decile within the same horizon, except exchange gaps, which are
+reported only where a real gap is present.
+"""
+
+
+def _window_apply(starts, width, values, func):
+    values = np.asarray(values, dtype=np.float64)
+    return np.asarray([func(values[s : s + width]) for s in starts], dtype=np.float64)
+
+
+def _real_stress_scores(k):
+    cfg = json.loads((REPO / DATA_CONFIG.format(fm=FEATURE_MODE, k=k)).read_text())
+    _, y, meta = raw_test_set(k, "gaussian", 0.0)
+    starts = meta["starts"]
+    width = int(cfg["T_past"])
+
+    mid = np.maximum(_RAW_DF["mid"].to_numpy(np.float64), 1e-12)
+    log_mid = np.log(mid)
+    spread = np.maximum(_RAW_DF["spread"].to_numpy(np.float64), 0.0) / mid
+
+    bid_amt = _RAW_DF.get("bids[0].amount", pd.Series(0.0, index=_RAW_DF.index))
+    ask_amt = _RAW_DF.get("asks[0].amount", pd.Series(0.0, index=_RAW_DF.index))
+    top_depth = np.maximum(
+        pd.to_numeric(bid_amt, errors="coerce").to_numpy(np.float64), 0.0
+    ) + np.maximum(pd.to_numeric(ask_amt, errors="coerce").to_numpy(np.float64), 0.0)
+
+    buy = np.maximum(_RAW_DF["buy_vol"].to_numpy(np.float64), 0.0)
+    sell = np.maximum(_RAW_DF["sell_vol"].to_numpy(np.float64), 0.0)
+    ofi_burst = np.abs(buy - sell) / (buy + sell + 1e-12)
+
+    ts = _RAW_DF["bin"].to_numpy(np.int64)
+    dt = np.diff(ts, prepend=ts[0])
+    ordinary_dt = np.median(dt[dt > 0]) if np.any(dt > 0) else 0
+
+    scores = {
+        "high_volatility": _window_apply(
+            starts, width + 1, log_mid, lambda x: np.std(np.diff(x))
+        ),
+        "spread_widening": _window_apply(starts, width, spread, np.nanmean),
+        "liquidity_drop": -_window_apply(starts, width, top_depth, np.nanmean),
+        "abnormal_ofi_burst": _window_apply(starts, width, ofi_burst, np.nanmax),
+    }
+    if ordinary_dt > 0:
+        scores["exchange_gap"] = _window_apply(
+            starts, width, dt, lambda x: np.max(x) > 1.5 * ordinary_dt
+        )
+    else:
+        scores["exchange_gap"] = np.zeros(len(starts), dtype=bool)
+    return y, scores
+
+
+def _mask_from_score(score, q=0.90):
+    score = np.asarray(score)
+    if score.dtype == bool:
+        return score
+    finite = np.isfinite(score)
+    if not np.any(finite):
+        return np.zeros(len(score), dtype=bool)
+    thr = np.quantile(score[finite], q)
+    return finite & (score >= thr)
+
+
+real_stress_rows = []
+for k in HORIZONS:
+    if not any((tag, k) in RESULTS for tag in MODELS):
+        continue
+    y_clean, score_map = _real_stress_scores(k)
+    for condition, score in score_map.items():
+        mask = _mask_from_score(score)
+        if mask.sum() == 0:
+            real_stress_rows.append(
+                {
+                    "condition": condition,
+                    "model": "(no real events)",
+                    "k": k,
+                    "n": 0,
+                    "accuracy": np.nan,
+                    "macro_f1": np.nan,
+                }
+            )
+            continue
+        for tag in MODELS:
+            if (tag, k) not in RESULTS:
+                continue
+            r = RESULTS[(tag, k)]
+            if not np.array_equal(r["y_true"], y_clean):
+                raise AssertionError(f"real-stress labels differ for {tag}, k={k}")
+            yt, yp = r["y_true"][mask], r["y_pred"][mask]
+            real_stress_rows.append(
+                {
+                    "condition": condition,
+                    "model": DISPLAY[tag],
+                    "k": k,
+                    "n": int(mask.sum()),
+                    "accuracy": float(np.mean(yt == yp)),
+                    "macro_f1": f1_score(
+                        yt,
+                        yp,
+                        average="macro",
+                        labels=[0, 1, 2],
+                        zero_division=0,
+                    ),
+                }
+            )
+
+real_stress_df = pd.DataFrame(real_stress_rows)
+if not real_stress_df.empty:
+    display(real_stress_df.sort_values(["condition", "k", "model"]))
+    for metric in ["accuracy", "macro_f1"]:
+        print(f"\n=== real market stress {metric} (mean across horizons) ===")
+        piv = real_stress_df.pivot_table(
+            index="model", columns="condition", values=metric, aggfunc="mean"
+        )
+        order = [DISPLAY[m] for m in MODELS if DISPLAY[m] in set(piv.index)]
+        display(
+            piv.reindex(order)
+            .style.background_gradient(cmap="YlGn", axis=None)
+            .format("{:.4f}")
+        )
 
 
 def _select_test_subset(ds, y, k):
@@ -1278,6 +1475,7 @@ def run_raw_robust_sweep():
                     ds,
                     y,
                     float(np.mean(y != clean_y)),
+                    _case_distortion(kind, sigma),
                 )
 
         for tag in MODELS:
@@ -1290,7 +1488,7 @@ def run_raw_robust_sweep():
             for kind in ROBUST_KINDS:
                 for sigma in ROBUST_SIGMAS:
                     cache_key = ("clean", 0.0) if sigma == 0.0 else (kind, sigma)
-                    ds, expected_y, label_change = cases[(kind, sigma)]
+                    ds, expected_y, label_change, distortion = cases[(kind, sigma)]
                     if cache_key not in prediction_cache:
                         prediction_cache[cache_key] = evaluate(model, ds)
                     yt, yp, pr = prediction_cache[cache_key]
@@ -1305,6 +1503,7 @@ def run_raw_robust_sweep():
                             "k": k,
                             "kind": kind,
                             "sigma": sigma,
+                            **distortion,
                             "accuracy": float(np.mean(yt == yp)),
                             "macro_f1": f1_score(
                                 yt,
@@ -1358,16 +1557,16 @@ def plot_robust_sweep(k):
     for ax, kind in zip(axes, ROBUST_KINDS):
         data = sub[sub["kind"] == kind]
         for i, name in enumerate(present):
-            model_rows = data[data["model"] == name].sort_values("sigma")
+            model_rows = data[data["model"] == name].sort_values("distortion_l2")
             ax.plot(
-                model_rows["sigma"],
+                model_rows["distortion_l2"],
                 model_rows["accuracy"],
                 "o-",
                 ms=4,
                 color=cmap(i % 10),
                 label=name,
             )
-        ax.set_xlabel("raw-noise severity (training-scale multiples)")
+        ax.set_xlabel(r"measured distortion $\|x'-x\|_2 / \|x\|_2$")
         ax.set_title(f"{kind} innovations")
         ax.grid(alpha=0.3)
 
@@ -1406,10 +1605,7 @@ if not robust_df.empty:
     )
     pivot = pivot[[kind for kind in ROBUST_KINDS if kind in pivot.columns]]
     pivot["mean"] = pivot.mean(axis=1)
-    print(
-        f"\nAccuracy retention at severity={high}, averaged across horizons "
-        "(higher is better):"
-    )
+    print(f"\nAccuracy retention at strongest requested corruption (sigma={high}):")
     display(
         pivot.sort_values("mean", ascending=False)
         .style.background_gradient(cmap="YlGn", axis=None)
@@ -1417,10 +1613,28 @@ if not robust_df.empty:
     )
 
     label_drift = (
-        robust_df[["k", "kind", "sigma", "label_change_rate"]]
+        robust_df[
+            [
+                "k",
+                "kind",
+                "sigma",
+                "distortion_l2",
+                "distortion_mad",
+                "distortion_q95",
+                "abnormal_move_prob",
+                "label_change_rate",
+            ]
+        ]
         .drop_duplicates()
         .pivot_table(
-            index=["kind", "sigma"],
+            index=[
+                "kind",
+                "sigma",
+                "distortion_l2",
+                "distortion_mad",
+                "distortion_q95",
+                "abnormal_move_prob",
+            ],
             columns="k",
             values="label_change_rate",
         )
@@ -1483,9 +1697,8 @@ def plot_calibration_under_noise(k, n_bins=10):
     ax.plot([1 / 3, 1], [1 / 3, 1], "k--", lw=0.8, alpha=0.6)
     ax.set_xlabel("mean confidence (p_max)")
     ax.set_ylabel("accuracy")
-    ax.set_title(
-        f"Reliability after raw jump corruption (severity={SIGMA_FOCUS}) — k={k}"
-    )
+    jump_d = _case_distortion("jump", SIGMA_FOCUS)["distortion_l2"]
+    ax.set_title(f"Reliability after raw jump corruption (D={jump_d:.3f}) — k={k}")
     ax.legend(fontsize=7)
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -1499,20 +1712,19 @@ for k in HORIZONS:
 """### Bootstrap confidence intervals on macro-F1
 
 The test set is short (~22 days, one asset), so small macro-F1 gaps may be noise. We
-resample the **clean** test windows with replacement (1000×) and report the 95%
-interval per model. Overlapping intervals ⇒ the models are statistically
-indistinguishable — which reframes "diffusion models rank lower" as "within noise of the
-baselines."
+resample the **clean** test windows in circular blocks and report the 95% interval
+per model. Block resampling keeps overlapping-window dependence in the uncertainty
+estimate. Overlapping intervals ⇒ the models are statistically indistinguishable.
 
 """
 
 
-def bootstrap_f1(yt, yp, n=1000, seed=0):
+def block_bootstrap_f1(yt, yp, block, n=1000, seed=0):
     rng = np.random.default_rng(seed)
     N = len(yt)
     vals = np.empty(n)
     for i in range(n):
-        idx = rng.integers(0, N, N)
+        idx = _circular_block_indices(N, block, rng)
         vals[i] = f1_score(
             yt[idx], yp[idx], average="macro", labels=[0, 1, 2], zero_division=0
         )
@@ -1521,8 +1733,25 @@ def bootstrap_f1(yt, yp, n=1000, seed=0):
 
 boot_rows = []
 for (tag, k), r in RESULTS.items():
-    mean, lo, hi = bootstrap_f1(r["y_true"], r["y_pred"])
-    boot_rows.append({"model": DISPLAY[tag], "k": k, "mean": mean, "lo": lo, "hi": hi})
+    correct = (r["y_true"] == r["y_pred"]).astype(float)
+    block = int(max(k, np.ceil(_integrated_ac_time_local(correct)), 1))
+    mean, lo, hi = block_bootstrap_f1(
+        r["y_true"],
+        r["y_pred"],
+        block,
+        seed=STAT_SEED + 31 * k + MODELS.index(tag),
+    )
+    boot_rows.append(
+        {
+            "model": DISPLAY[tag],
+            "k": k,
+            "block": block,
+            "mean": mean,
+            "lo": lo,
+            "hi": hi,
+            "pm": 0.5 * (hi - lo),
+        }
+    )
 boot_df = pd.DataFrame(boot_rows)
 
 # forest plot: macro-F1 ± 95% CI per model, one panel per horizon
@@ -1555,7 +1784,16 @@ fig.suptitle(
 fig.tight_layout()
 save_fig(fig)
 plt.show()
-boot_df.pivot(index="model", columns="k", values="mean").reindex(present)
+display(
+    boot_df.pivot(index="model", columns="k", values="mean")
+    .reindex(present)
+    .style.format("{:.4f}")
+)
+display(
+    boot_df.pivot(index="model", columns="k", values="pm")
+    .reindex(present)
+    .style.format("±{:.4f}")
+)
 
 """## 8. Final model comparison table
 
