@@ -215,6 +215,8 @@ MODELS = {
     "ofsatnet": (OFSATNet, "ofsatnet_"),
     "gaussgatelob": (GaussGateLOB, "gaussgatelob_"),
 }
+MODEL_ORDER = list(MODELS)
+MODEL_INDEX = {tag: i for i, tag in enumerate(MODEL_ORDER)}
 LABELS = ["down", "stationary", "up"]
 DISPLAY = {m: f"{m} + {FEATURE_MODE}" for m in MODELS}
 
@@ -536,7 +538,7 @@ for tgt in boot_targets:
                 rt["y_pred"],
                 ro["y_pred"],
                 block,
-                seed=STAT_SEED + 17 * k + 1009 * MODELS.index(tgt) + MODELS.index(oth),
+                seed=STAT_SEED + 17 * k + 1009 * MODEL_INDEX[tgt] + MODEL_INDEX[oth],
             )
             pair_rows.append(
                 {
@@ -1739,7 +1741,7 @@ for (tag, k), r in RESULTS.items():
         r["y_true"],
         r["y_pred"],
         block,
-        seed=STAT_SEED + 31 * k + MODELS.index(tag),
+        seed=STAT_SEED + 31 * k + MODEL_INDEX[tag],
     )
     boot_rows.append(
         {
