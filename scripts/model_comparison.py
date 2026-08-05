@@ -114,10 +114,8 @@ from crypto.features import extract_features, n_features  # noqa: E402
 from crypto.labels import compute_trend_series  # noqa: E402
 from crypto.loader import build_cache  # noqa: E402
 from models.alphastablelob import AlphaStableLOB  # noqa: E402
-from models.ctabl import CTABL  # noqa: E402
 from models.binctabl import BINCTABL  # noqa: E402
 from models.deeplob import DeepLOB  # noqa: E402
-from models.dla import DLA  # noqa: E402
 from models.jumpgatelob import JumpGateLOB  # noqa: E402
 from models.tlob import TLOB  # noqa: E402
 from models.linvar import LinVAR  # noqa: E402
@@ -201,10 +199,10 @@ BATCH = 256
 
 # tag -> (class, checkpoint-dir prefix written by the train scripts)
 MODELS = {
-    "dla": (DLA, "dla_"),
+    # "dla": (DLA, "dla_"),
     # "axial": (AxialLOB, "axiallob_"),
     "tlob": (TLOB, "tlob_"),
-    "ctabl": (CTABL, "ctabl_"),
+    # "ctabl": (CTABL, "ctabl_"),
     "binctabl": (BINCTABL, "binctabl_"),
     "deeplob": (DeepLOB, "deeplob_"),
     "alphastablelob_1.5": (AlphaStableLOB, "alphastablelob_joint_a1.5_"),
