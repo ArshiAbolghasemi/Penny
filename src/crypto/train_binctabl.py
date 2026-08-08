@@ -8,6 +8,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -28,11 +29,13 @@ from models.binctabl import BINCTABL, count_parameters
 from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
+    add_seed_args,
     build_cosine_schedule,
     resolve_device,
-    resolve_seed,
+    resolve_seeds,
     seed_worker,
     set_seed,
+    summarize_seed_runs,
 )
 
 
@@ -66,20 +69,8 @@ def _validate(model, loader, device):
     return ce / max(len(loader), 1), correct / max(n, 1)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "config", nargs="?", default="configs/crypto/binance/binctabl/btcusdt_ofi.json"
-    )
-    args = parser.parse_args()
-
-    config_path = Path(args.config)
-    if not config_path.exists():
-        logger.error("config not found: {}", config_path)
-        sys.exit(1)
-    config = json.loads(config_path.read_text())
-
-    seed = resolve_seed(config)
+def _run_seed(config, args, seed: int, multi_seed: bool) -> dict:
+    """Train and test one seed; returns its test metrics for aggregation."""
     config["seed"] = seed
     generator = set_seed(seed)
 
@@ -90,8 +81,10 @@ def main() -> None:
         Path(config["checkpoint_dir"])
         / f"binctabl_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"
     )
+    if multi_seed:
+        ckpt_dir = ckpt_dir.with_name(f"{ckpt_dir.name}_seed{seed}")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    logger.add(ckpt_dir / "train.log", level="DEBUG")
+    log_sink = logger.add(ckpt_dir / "train.log", level="DEBUG")
 
     train_ds, val_ds, test_ds, alpha, meta = build_datasets(config)
     config["n_features"] = meta["n_features"]
@@ -173,7 +166,40 @@ def main() -> None:
     (ckpt_dir / "training_log.json").write_text(json.dumps(history, indent=2))
     ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
-    run_test(model, test_ds, config, device)
+    metrics = run_test(model, test_ds, config, device)
+    (ckpt_dir / "metrics.json").write_text(
+        json.dumps({"test": metrics}, indent=2, default=str)
+    )
+
+    logger.remove(log_sink)
+    return {
+        "seed": seed,
+        "run_dir": str(ckpt_dir),
+        "accuracy": metrics["accuracy"],
+        "macro_f1": metrics["macro_f1"],
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "config", nargs="?", default="configs/crypto/binance/binctabl/btcusdt_ofi.json"
+    )
+    add_seed_args(parser)
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        logger.error("config not found: {}", config_path)
+        sys.exit(1)
+    config = json.loads(config_path.read_text())
+
+    seeds = resolve_seeds(config, args.seeds)
+    if len(seeds) > 1:
+        logger.info("training {} seeds: {}", len(seeds), seeds)
+    runs = [_run_seed(copy.deepcopy(config), args, s, len(seeds) > 1) for s in seeds]
+    if len(seeds) > 1:
+        summarize_seed_runs(runs)
 
 
 if __name__ == "__main__":

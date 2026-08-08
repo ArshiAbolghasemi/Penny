@@ -116,7 +116,29 @@ checkpoint, and logs test metrics. Outputs (`best.pt`, `config.json`,
 
 Configs are organised as `configs/crypto/{exchange}/{model}/{symbol}_{mode}_{k}.json`,
 where `mode ∈ {ofi, lob}` is the feature representation and `k` is the label horizon.
-Multi-seed runs: set `PENNY_SEED=…` to override the config seed without editing files.
+
+### Seed sweeps (mean ± std)
+
+Every `train_*.py` accepts `--seeds`, which trains the same config once per seed and
+reports test accuracy and macro-F1 as mean ± std across seeds:
+
+```bash
+uv run python -m crypto.train_deeplob configs/crypto/coinbase/deeplob/btcirt_ofi_k10.json --seeds 0 1 2
+uv run python -m crypto.train_deeplob configs/crypto/coinbase/deeplob/btcirt_ofi_k10.json --seeds 0,1,2
+```
+
+Seed precedence is `--seeds` > `$PENNY_SEED` > `config["seeds"]` > `config["seed"]`, so
+a single-seed run behaves exactly as before. With more than one seed each run gets its
+own `…_seed{n}` folder and the sweep writes `…_seed_summary.json` (per-seed values plus
+mean / std / sem / min / max) beside them. Collect every sweep into one table with:
+
+```bash
+uv run python scripts/seed_report.py checkpoints --csv outputs/seed_report.csv
+```
+
+That spread is training (seed) variance on a fixed test set — not a confidence interval
+for the metric, and not a model-vs-model test; use `scripts/stochlob_significance.py`
+for the latter, which accounts for the dependence between overlapping LOB windows.
 
 ## Running on SLURM
 

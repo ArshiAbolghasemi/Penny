@@ -4,31 +4,177 @@ Provides ``resolve_device`` (cuda→mps→cpu fallback), ``build_cosine_schedule
 (linear warmup + cosine decay), and reproducibility helpers (``resolve_seed`` /
 ``set_seed`` / ``seed_worker``) so every model family trains under an identical,
 seed-controlled protocol — a prerequisite for a fair cross-model comparison.
+
+For seed sweeps, ``add_seed_args`` / ``resolve_seeds`` / ``summarize_seed_runs``
+let any training script train the same config once per seed and report test
+accuracy and macro-F1 as mean ± std across seeds.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
 import os
 import random
+import re
+from pathlib import Path
 
 import numpy as np
 import torch
 from loguru import logger
 from torch.optim.lr_scheduler import LambdaLR
 
+#: Test metrics aggregated across seeds by :func:`summarize_seed_runs`.
+SEED_METRICS = ("accuracy", "macro_f1")
+
+
+def _parse_seed_list(raw) -> list[int]:
+    """Parse seeds from a string / list of strings; comma *or* space separated.
+
+    Accepts ``"1,2,3"``, ``"1 2 3"`` and ``["1,2", "3"]`` alike, so the same parser
+    serves ``$PENNY_SEED`` and ``--seeds`` without the caller normalising first.
+    Duplicates are dropped (order preserved) — training the same seed twice would
+    contribute a spurious zero-variance sample to the reported std.
+    """
+    parts = raw if isinstance(raw, (list, tuple)) else [raw]
+    tokens = [t for p in parts for t in str(p).replace(",", " ").split()]
+    seeds: list[int] = []
+    for tok in tokens:
+        try:
+            s = int(tok)
+        except ValueError:
+            raise ValueError(f"seed must be an integer, got {tok!r}") from None
+        if s not in seeds:
+            seeds.append(s)
+    return seeds
+
 
 def resolve_seed(config: dict) -> int:
-    """Resolve the run seed.  Precedence: ``$PENNY_SEED`` > ``config["seed"]`` > 42.
+    """Resolve a single run seed.  Precedence: ``$PENNY_SEED`` > ``config["seed"]`` > 42.
 
-    The env override lets one config be launched across several seeds (e.g.
-    ``PENNY_SEED=1,2,3``) without editing files — use it to report mean ± std
-    instead of a single noisy run.
+    Kept for callers that train exactly once; multi-seed entry points should use
+    :func:`resolve_seeds`.  If ``$PENNY_SEED`` holds a list, the first seed wins.
     """
     env = os.environ.get("PENNY_SEED")
     if env is not None and env.strip():
-        return int(env)
+        seeds = _parse_seed_list(env)
+        if len(seeds) > 1:
+            logger.warning(
+                "PENNY_SEED={} lists {} seeds but this caller trains once; using {}",
+                env,
+                len(seeds),
+                seeds[0],
+            )
+        if seeds:
+            return seeds[0]
     return int(config.get("seed", 42))
+
+
+def resolve_seeds(config: dict, cli=None) -> list[int]:
+    """Resolve the list of seeds to train over.
+
+    Precedence: ``--seeds`` > ``$PENNY_SEED`` > ``config["seeds"]`` > the single
+    seed from :func:`resolve_seed`.  Always returns at least one seed, so a caller
+    that passes nothing behaves exactly as it did before seeds were sweepable.
+    """
+    if cli:
+        return _parse_seed_list(cli)
+    env = os.environ.get("PENNY_SEED")
+    if env is not None and env.strip():
+        seeds = _parse_seed_list(env)
+        if seeds:
+            return seeds
+    cfg = config.get("seeds")
+    if cfg:
+        seeds = _parse_seed_list(cfg)
+        if seeds:
+            return seeds
+    return [resolve_seed(config)]
+
+
+def add_seed_args(parser: argparse.ArgumentParser) -> None:
+    """Add the shared ``--seeds`` flag to a training script's parser."""
+    parser.add_argument(
+        "--seeds",
+        nargs="+",
+        default=None,
+        metavar="SEED",
+        help="train once per seed and report mean ± std of the test metrics "
+        "(e.g. --seeds 0 1 2 or --seeds 0,1,2). Falls back to $PENNY_SEED, then "
+        "config['seeds'], then the single config['seed'].",
+    )
+
+
+def summarize_seed_runs(runs, out_dir=None) -> dict:
+    """Aggregate per-seed test metrics into mean ± std and persist the summary.
+
+    Args:
+        runs: one dict per seed as returned by a script's per-seed entry point —
+            ``{"seed": int, "run_dir": str, "accuracy": float, "macro_f1": float}``.
+        out_dir: where to write ``<run>_seed_summary.json``; defaults to the parent
+            of the first run directory (i.e. ``config["checkpoint_dir"]``).
+
+    The spread reported here is **training (seed) variance on a fixed test set** —
+    it is not a confidence interval for the metric itself, and it is not the
+    dependence-aware paired interval that ``scripts/stochlob_significance.py``
+    computes for model-vs-model differences.  Quote it as "mean ± std over N seeds".
+
+    Returns the summary dict (also written to JSON).  ``std`` is the sample
+    standard deviation (``ddof=1``) and is ``None`` for a single seed, where the
+    spread is undefined rather than zero.
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        logger.warning("seed summary skipped: no completed runs")
+        return {}
+
+    summary = {
+        "n_seeds": len(runs),
+        "seeds": [r["seed"] for r in runs],
+        "runs": runs,
+        "metrics": {},
+    }
+    for key in SEED_METRICS:
+        vals = [float(r[key]) for r in runs if r.get(key) is not None]
+        if not vals:
+            continue
+        arr = np.asarray(vals, dtype=float)
+        std = float(arr.std(ddof=1)) if len(arr) > 1 else None
+        summary["metrics"][key] = {
+            "mean": float(arr.mean()),
+            "std": std,
+            "sem": (std / math.sqrt(len(arr))) if std is not None else None,
+            "min": float(arr.min()),
+            "max": float(arr.max()),
+            "values": vals,
+        }
+
+    logger.info("SEED SWEEP  n={}  seeds={}", summary["n_seeds"], summary["seeds"])
+    for key, m in summary["metrics"].items():
+        logger.info(
+            "  {:<10} mean={:.4f}  std={}  min={:.4f}  max={:.4f}",
+            key,
+            m["mean"],
+            "n/a" if m["std"] is None else f"{m['std']:.4f}",
+            m["min"],
+            m["max"],
+        )
+        logger.info(
+            "  {:<10} per-seed: {}",
+            key,
+            "  ".join(f"{r['seed']}={float(r[key]):.4f}" for r in runs if key in r),
+        )
+
+    first = Path(runs[0]["run_dir"])
+    out_dir = Path(out_dir) if out_dir is not None else first.parent
+    base = re.sub(r"_seed-?\d+$", "", first.name)
+    out_path = out_dir / f"{base}_seed_summary.json"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(summary, indent=2, default=str))
+    logger.info("  summary → {}", out_path)
+    summary["summary_path"] = str(out_path)
+    return summary
 
 
 def set_seed(seed: int) -> torch.Generator:

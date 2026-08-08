@@ -28,6 +28,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -56,12 +57,14 @@ from models.probe import (
 )
 from utils.evaluate import run_test
 from utils.training import (
+    add_seed_args,
     build_cosine_schedule,
     measure_sigma_data,
     resolve_device,
-    resolve_seed,
+    resolve_seeds,
     seed_worker,
     set_seed,
+    summarize_seed_runs,
 )
 
 
@@ -393,31 +396,14 @@ def _phase_config(base: dict, phase: str) -> dict:
     return cfg
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "config",
-        nargs="?",
-        default="configs/crypto/coinbase/twophase/btcirt_ofi_k10_dit.json",
-    )
-    parser.add_argument("--backbone", default=None, help="override config['backbone']")
-    parser.add_argument(
-        "--objective", default=None, help="edm | drift (override config)"
-    )
-    args = parser.parse_args()
-
-    config_path = Path(args.config)
-    if not config_path.exists():
-        logger.error("config not found: {}", config_path)
-        sys.exit(1)
-    base = json.loads(config_path.read_text())
+def _run_seed(base, args, seed: int, multi_seed: bool) -> dict:
+    """Run both phases for one seed; returns its test metrics for aggregation."""
     if args.backbone:
         base["backbone"] = args.backbone
     if args.objective:
         base["objective"] = args.objective
     objective = base.get("objective", "edm")
 
-    seed = resolve_seed(base)
     base["seed"] = seed
     generator = set_seed(seed)
     device = resolve_device(base["device"])
@@ -428,8 +414,10 @@ def main() -> None:
         / f"twophase_{base.get('backbone')}_{objective}_{base['symbol']}"
         f"_{base.get('feature_mode', '')}_{stamp}"
     )
+    if multi_seed:
+        ckpt_dir = ckpt_dir.with_name(f"{ckpt_dir.name}_seed{seed}")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    logger.add(ckpt_dir / "train.log", level="DEBUG")
+    log_sink = logger.add(ckpt_dir / "train.log", level="DEBUG")
 
     # One dataset build shared by both phases (same past-window tensor).
     train_ds, val_ds, test_ds, alpha, meta = build_datasets(base)
@@ -463,6 +451,42 @@ def main() -> None:
         report["test_accuracy"],
         report["test_macro_f1"],
     )
+
+    logger.remove(log_sink)
+    return {
+        "seed": seed,
+        "run_dir": str(ckpt_dir),
+        "accuracy": report["test_accuracy"],
+        "macro_f1": report["test_macro_f1"],
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default="configs/crypto/coinbase/twophase/btcirt_ofi_k10_dit.json",
+    )
+    parser.add_argument("--backbone", default=None, help="override config['backbone']")
+    parser.add_argument(
+        "--objective", default=None, help="edm | drift (override config)"
+    )
+    add_seed_args(parser)
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        logger.error("config not found: {}", config_path)
+        sys.exit(1)
+    base = json.loads(config_path.read_text())
+
+    seeds = resolve_seeds(base, args.seeds)
+    if len(seeds) > 1:
+        logger.info("training {} seeds: {}", len(seeds), seeds)
+    runs = [_run_seed(copy.deepcopy(base), args, s, len(seeds) > 1) for s in seeds]
+    if len(seeds) > 1:
+        summarize_seed_runs(runs)
 
 
 if __name__ == "__main__":
