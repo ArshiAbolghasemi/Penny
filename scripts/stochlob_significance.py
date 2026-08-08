@@ -206,9 +206,9 @@ def _block_conf(y_true: np.ndarray, y_pred: np.ndarray, block: int) -> np.ndarra
     n = len(y_true)
     cell = np.arange(n) // block
     n_cells = int(cell[-1]) + 1
-    return np.bincount(
-        cell * 9 + (3 * y_true + y_pred), minlength=n_cells * 9
-    ).reshape(n_cells, 9)
+    return np.bincount(cell * 9 + (3 * y_true + y_pred), minlength=n_cells * 9).reshape(
+        n_cells, 9
+    )
 
 
 def paired_block_permutation(
@@ -371,9 +371,7 @@ def main() -> None:
 
     runs = discover_runs(horizons)
     for name in ("baseline", *TARGET_PREFIXES):
-        avail = ", ".join(
-            f"k{k}:{'OK' if k in runs[name] else '--'}" for k in horizons
-        )
+        avail = ", ".join(f"k{k}:{'OK' if k in runs[name] else '--'}" for k in horizons)
         logger.info("  {:<16} {}", name, avail)
     if not runs["baseline"]:
         raise SystemExit(
@@ -391,9 +389,7 @@ def main() -> None:
             logger.warning("k={}: no target runs, horizon skipped", k)
             continue
 
-        cfg = json.loads(
-            (REPO / DATA_CONFIG.format(fm=FEATURE_MODE, k=k)).read_text()
-        )
+        cfg = json.loads((REPO / DATA_CONFIG.format(fm=FEATURE_MODE, k=k)).read_text())
         _, _, test_ds, alpha, _meta = build_datasets(cfg)
         loader = DataLoader(test_ds, batch_size=BATCH, shuffle=False)
         t_past = int(cfg["T_past"])

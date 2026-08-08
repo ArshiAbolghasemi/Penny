@@ -248,9 +248,7 @@ def collect(horizons: tuple[int, ...], n_boot: int, seed: int, device) -> pd.Dat
                 "  {:<16} {:<14} pooled macro_f1={:.4f}",
                 name,
                 cls.__name__,
-                _macro_f1_from_conf(
-                    np.bincount(3 * y_true + preds[name], minlength=9)
-                ),
+                _macro_f1_from_conf(np.bincount(3 * y_true + preds[name], minlength=9)),
             )
 
         base_ok = (preds["baseline"] == y_true).astype(float)
@@ -514,7 +512,18 @@ def main() -> None:
     logger.info("")
     logger.info("=== most-stressed decile (10/10) — Δ macro-F1 vs baseline ===")
     for line in (
-        ext[["k", "condition", "target", "n_windows", "d_macro_f1", "d_f1_lo", "d_f1_hi", "d_f1_p"]]
+        ext[
+            [
+                "k",
+                "condition",
+                "target",
+                "n_windows",
+                "d_macro_f1",
+                "d_f1_lo",
+                "d_f1_hi",
+                "d_f1_p",
+            ]
+        ]
         .to_string(index=False)
         .splitlines()
     ):
