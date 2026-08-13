@@ -47,7 +47,7 @@ import copy
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
@@ -63,6 +63,8 @@ from torch.utils.data import DataLoader
 from levy.config import DiffusionConfig
 from levy.diffusion import ForwardProcess
 from models.jumpgatelob import JumpGateLOB, count_parameters
+from stocks.feishu.features import n_features as feishu_n_features
+from stocks.feishu_midprice.build import build_datasets, discover_symbols
 from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
@@ -74,8 +76,6 @@ from utils.training import (
     set_seed,
     summarize_seed_runs,
 )
-from stocks.feishu_midprice.build import build_datasets, discover_symbols
-from stocks.feishu.features import n_features as feishu_n_features
 
 
 def _diffusion_cfg(config: dict) -> DiffusionConfig:
@@ -266,7 +266,7 @@ def _run_seed(config, args, seed: int, multi_seed: bool) -> dict:
     generator = set_seed(seed)
 
     device = resolve_device(config["device"])
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     mode = "baseline" if args.baseline else process
     ckpt_dir = (
         Path(config["checkpoint_dir"])

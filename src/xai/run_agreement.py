@@ -76,7 +76,7 @@ def main() -> None:
 
         model = _resolve_model(ckpt_dir, config).to(device)
         ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
+        model.load_state_dict(ckpt.get("model", ckpt))
 
         # IG and the probes must see the *same* windows or the correlation is
         # comparing two different samples; both draw this index set.

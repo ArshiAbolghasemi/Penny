@@ -1,4 +1,4 @@
-"""Turn the XAI-layer artefacts into the paper's figures.
+r"""Turn the XAI-layer artefacts into the paper's figures.
 
 Usage::
 

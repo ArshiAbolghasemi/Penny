@@ -32,7 +32,7 @@ import copy
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
@@ -66,7 +66,6 @@ from utils.training import (
     set_seed,
     summarize_seed_runs,
 )
-
 
 # ───────────────────────── Phase 1: generative objectives ──────────────────────
 
@@ -408,7 +407,7 @@ def _run_seed(base, args, seed: int, multi_seed: bool) -> dict:
     generator = set_seed(seed)
     device = resolve_device(base["device"])
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     ckpt_dir = (
         Path(base["checkpoint_dir"])
         / f"twophase_{base.get('backbone')}_{objective}_{base['symbol']}"
@@ -420,7 +419,7 @@ def _run_seed(base, args, seed: int, multi_seed: bool) -> dict:
     log_sink = logger.add(ckpt_dir / "train.log", level="DEBUG")
 
     # One dataset build shared by both phases (same past-window tensor).
-    train_ds, val_ds, test_ds, alpha, meta = build_datasets(base)
+    train_ds, val_ds, test_ds, _alpha, meta = build_datasets(base)
     base["n_features"] = meta["n_features"]
     logger.info(
         "TWO-PHASE  backbone={}  objective={}  symbol={}  mode={}  k={}  device={}",

@@ -135,3 +135,20 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.4.0",
 ]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint.per-file-ignores]
+# Research notebooks intentionally recover from optional/missing artifacts so one
+# unavailable dataset or checkpoint does not stop the remaining diagnostics.
+"*.ipynb" = ["BLE001", "S110", "S112"]
+# These reporting/data utilities similarly isolate failures per checkpoint, symbol,
+# or date and log/print the failure before continuing the batch.
+"scripts/model_comparison.py" = ["B018", "BLE001", "S110"]
+"scripts/plot_stress_vs_variance_robustness.py" = ["BLE001", "S110"]
+"scripts/portfolio_backtest.py" = ["B018"]
+"scripts/resample_*.py" = ["BLE001"]
+"src/stocks/feishu/build.py" = ["BLE001"]
+"src/stocks/feishu_midprice/build.py" = ["BLE001"]
+"src/utils/flops.py" = ["BLE001"]

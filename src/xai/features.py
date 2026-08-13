@@ -87,13 +87,13 @@ def feature_groups(config: dict, best_levels: int = 3) -> FeatureGroups:
     groups: dict[str, list[int]] = {}
 
     if mode == "ofi":
-        groups["OFI_best"] = list(range(0, b))
+        groups["OFI_best"] = list(range(b))
         if b < n:
             groups["OFI_deep"] = list(range(b, n))
         off = n
     else:
         # prices then volumes, each split best/deep across bid+ask
-        groups["price_best"] = list(range(0, b)) + list(range(n, n + b))
+        groups["price_best"] = list(range(b)) + list(range(n, n + b))
         if b < n:
             groups["price_deep"] = list(range(b, n)) + list(range(n + b, 2 * n))
         groups["volume_best"] = list(range(2 * n, 2 * n + b)) + list(

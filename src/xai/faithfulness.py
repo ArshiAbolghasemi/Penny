@@ -113,7 +113,7 @@ def curve(
             indices,
             device,
             order,
-            int(round(f * F)),
+            round(f * F),
             mode,
             baseline,
             bs,
@@ -157,7 +157,7 @@ def faithfulness(
     """
     order = np.argsort(per_feature)[::-1].copy()  # most important first
     rng = np.random.default_rng(seed)
-    out: dict = {"n_windows": int(len(indices)), "baseline": baseline}
+    out: dict = {"n_windows": len(indices), "baseline": baseline}
 
     for mode in ("deletion", "insertion"):
         attr_curve = curve(

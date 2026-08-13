@@ -31,14 +31,13 @@ logits (B, 3)`` from a single clean-window pass (no sampling loop).
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 from models.modules import (
     AttentionPool,
     BiN,
     LevelAttention,
-    count_parameters as count_parameters,  # re-export
     sinusoidal_embedding,
 )
 

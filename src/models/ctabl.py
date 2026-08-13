@@ -26,9 +26,7 @@ ctabl_dropout  dropout between layers              (default 0.1)
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
-
-from models.modules import count_parameters as count_parameters  # re-export
+from torch import nn
 
 
 class BL(nn.Module):

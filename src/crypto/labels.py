@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import numpy as np
 
-
 DOWN, STATIONARY, UP = 0, 1, 2
 
 

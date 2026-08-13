@@ -87,11 +87,12 @@ for _p in (REPO, REPO / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from crypto.dataset import build_datasets  # noqa: E402
-from models.alphastablelob import AlphaStableLOB  # noqa: E402
-from models.gaussgatelob import GaussGateLOB  # noqa: E402
-from models.jumpgatelob import JumpGateLOB  # noqa: E402
-from torch.utils.data import DataLoader  # noqa: E402
+from torch.utils.data import DataLoader
+
+from crypto.dataset import build_datasets
+from models.alphastablelob import AlphaStableLOB
+from models.gaussgatelob import GaussGateLOB
+from models.jumpgatelob import JumpGateLOB
 
 EXCHANGE = "coinbase"
 SYMBOL = "BTCIRT"

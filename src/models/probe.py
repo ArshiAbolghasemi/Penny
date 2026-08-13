@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 from models.jointdit import JointDiT
 from models.modules import AttentionPool
@@ -80,7 +80,7 @@ def _tap_to_time_feat(act: torch.Tensor, grid: tuple[int, int] | None) -> torch.
     assert act.dim() == 3, f"unexpected tap ndim={act.dim()}"
     assert grid is not None, "DiT tap needs the patch grid (gt, gf)"
     gt, gf = grid
-    b, n, d = act.shape
+    b, _n, d = act.shape
     return act.reshape(b, gt, gf, d).mean(dim=2)  # (B, gt, D)
 
 

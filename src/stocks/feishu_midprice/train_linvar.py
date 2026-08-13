@@ -12,7 +12,7 @@ import copy
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
@@ -24,6 +24,9 @@ from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
+from models.linvar import LinVAR, count_parameters
+from stocks.feishu.features import n_features as feishu_n_features
+from stocks.feishu_midprice.build import build_datasets, discover_symbols
 from utils.evaluate import run_test
 from utils.training import (
     add_seed_args,
@@ -34,9 +37,6 @@ from utils.training import (
     set_seed,
     summarize_seed_runs,
 )
-from models.linvar import LinVAR, count_parameters
-from stocks.feishu_midprice.build import build_datasets, discover_symbols
-from stocks.feishu.features import n_features as feishu_n_features
 
 
 def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
@@ -76,7 +76,7 @@ def _run_seed(config, args, seed: int, multi_seed: bool) -> dict:
 
     device = resolve_device(config["device"])
     grad_clip = config.get("grad_clip", 1.0)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     ckpt_dir = (
         Path(config["checkpoint_dir"])
         / f"linvar_{config.get('feature_mode', 'ofi')}_{stamp}"

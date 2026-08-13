@@ -14,9 +14,7 @@ Output: ``(B, 3)`` class logits  (0=down, 1=stationary, 2=up).
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
-
-from models.modules import count_parameters as count_parameters  # re-export
+from torch import nn
 
 
 class LogReg(nn.Module):

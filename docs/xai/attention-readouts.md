@@ -19,8 +19,8 @@ the flag off the forward paths are unchanged and the `predict` contract is
 identical, so the readouts cannot drift from the evaluated model.
 
 ```python
-logits, attn = model(x, return_attn=True)              # CTABL, DLA
-logits, attn = model.classify(x, return_attn=True)     # JumpGateLOB
+logits, attn = model(x, return_attn=True)  # CTABL, DLA
+logits, attn = model.classify(x, return_attn=True)  # JumpGateLOB
 ```
 
 ## What each model exposes

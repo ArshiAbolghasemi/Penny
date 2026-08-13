@@ -32,7 +32,7 @@ import copy
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
@@ -140,7 +140,7 @@ def _run_seed(config, args, seed: int, multi_seed: bool) -> dict:
     generator = set_seed(seed)
 
     device = resolve_device(config["device"])
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     ckpt_dir = (
         Path(config["checkpoint_dir"])
         / f"jointdit_drift_{config['symbol']}_{config.get('feature_mode', '')}_{stamp}"

@@ -70,11 +70,11 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import torch  # noqa: E402
-from loguru import logger  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+from loguru import logger
 
 REPO = Path(__file__).resolve().parent.parent
 os.chdir(REPO)
@@ -82,22 +82,23 @@ for _p in (REPO, REPO / "src", REPO / "scripts"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from crypto.dataset import build_datasets  # noqa: E402
-from stochlob_significance import (  # noqa: E402
+from stochlob_significance import (
     DATA_CONFIG,
     FEATURE_MODE,
     HORIZONS,
     SYMBOL,
     TARGET_PREFIXES,
+    _block_length,
     _macro_f1_from_conf,
     discover_runs,
     load_model,
     paired_block_bootstrap,
     paired_block_permutation,
     predict_all,
-    _block_length,
 )
-from torch.utils.data import DataLoader  # noqa: E402
+from torch.utils.data import DataLoader
+
+from crypto.dataset import build_datasets
 
 BATCH = 256
 STAT_SEED = 20260806

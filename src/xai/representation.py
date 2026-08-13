@@ -39,8 +39,8 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-import torch.nn as nn
 from loguru import logger
+from torch import nn
 from torch.utils.data import DataLoader, Subset
 
 from models.probe import class_weights_from_labels

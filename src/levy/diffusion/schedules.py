@@ -34,7 +34,7 @@ class NoiseSchedule:
     sigma: torch.Tensor  # Brownian noise std sigma_t
     num_timesteps: int
 
-    def to(self, device: torch.device | str) -> "NoiseSchedule":
+    def to(self, device: torch.device | str) -> NoiseSchedule:
         return NoiseSchedule(
             self.kind, self.a.to(device), self.sigma.to(device), self.num_timesteps
         )
