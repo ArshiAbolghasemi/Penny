@@ -35,7 +35,8 @@ multiple predictive latent futures over a normalized interval. A state-dependent
 router is recomputed at every step and mixes fixed-α stable and compound-Poisson jump
 increments around a shared drift. Their terminal class probabilities are averaged at
 inference; entropy and trajectory disagreement quantify uncertainty. The historical
-score-matching head remains a separate training-time auxiliary.
+StochLOB has no score head; the existing score-matching models remain separate
+baselines.
 
 ## Setup
 
@@ -107,12 +108,12 @@ uv run python -m crypto.train_alphastablelob configs/crypto/coinbase/alphastable
 uv run python -m crypto.train_gaussgatelob   configs/crypto/coinbase/gaussgatelob/btcirt_ofi_k10.json
 
 # routed stochastic latent forecasting, jointly trained at k=10/20/50/100
-uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi_k10.json
 
-# key stochastic ablations (add --no-score for dynamics-only variants)
-uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json --dynamics stable
-uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json --dynamics jump
-uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json --dynamics gaussian
+# key stochastic-dynamics ablations
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi_k10.json --dynamics stable
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi_k10.json --dynamics jump
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi_k10.json --dynamics gaussian
 ```
 
 Each run builds/loads the feature cache, trains with early stopping, restores the best

@@ -1,7 +1,7 @@
 # StochLOB stochastic forecaster
 
-StochLOB retains the AlphaStableLOB sequence encoder and score head but changes the
-prediction path. The optional BiN, two-layer BiGRU, temporal multi-head attention,
+StochLOB retains the AlphaStableLOB sequence encoder but does not construct or train
+its score head. The optional BiN, two-layer BiGRU, temporal multi-head attention,
 AdaLN timestep conditioning, and attention pool encode the observed `(60, 31)` window
 once into `z0`. A custom PyTorch Euler rollout then models predictive latent futures;
 the historical samples are not solver steps.
@@ -21,13 +21,22 @@ draws, scales, intensity, jump magnitudes, and latent states have configurable s
 bounds; LayerNorm and gradient clipping provide additional control. Poisson counts are
 true samples in the forward pass with a straight-through gradient for their mean.
 
-Training averages cross-entropy over four trajectories by default. The inherited
-alpha-stable denoising score loss remains independent:
+Training draws four trajectories by default and supports two classification
+objectives. `pathwise` averages cross-entropy over trajectories, requiring every
+sampled future to remain predictive. `marginal` applies NLL to the mean trajectory
+probability, exactly matching inference-time Monte Carlo aggregation:
 
 ```text
-L = mean_m CE(classifier(z_T^m, k), y) + lambda_score L_score
-    - lambda_route H(router)
+L_path     = mean_m [-log p_m(y)]
+L_marginal = -log(mean_m p_m(y))
 ```
+
+The supplied configs select `classification_objective: "marginal"` so predictive
+training and inference use the same mixture distribution. Both losses are logged on
+every batch for a controlled diversity/performance ablation. The CLI option
+`--classification-objective pathwise|marginal` overrides the config. The optional
+route entropy term is added to the selected classification loss; there is no
+score-matching objective in StochLOB.
 
 The route entropy term defaults to zero. If enabled, it anneals away and encourages
 early exploration without imposing a 50/50 marginal route.
@@ -40,10 +49,9 @@ variance-controlled jump residual. It also evaluates `M = 1, 5, 10, 20, 50`.
 
 `latent_dynamics` selects `deterministic`, `gaussian`, `stable`, `jump`, or `routed`,
 so the central fixed-stable versus fixed-jump versus adaptive-routing comparison shares
-one encoder and classifier implementation. `--score-objective` selects `gaussian`,
-`jump`, or `alpha` DSM with the same predictive model; use `--no-score` for the
-stochastic-dynamics-only ablation.
+one encoder and classifier implementation. The legacy AlphaStableLOB, JumpGateLOB,
+and GaussGateLOB trainers remain available as separate score-matching baselines.
 
 ```bash
-uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi_k10.json
 ```

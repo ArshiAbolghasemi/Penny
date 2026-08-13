@@ -219,15 +219,20 @@ class AlphaStableLOB(nn.Module):
         self.cls_dropout = nn.Dropout(config.get("cls_dropout", 0.0))
         self.classifier = nn.Linear(D, 3)
 
-        # ---- diffusion (score) head -----------------------------------------
-        self.diff_head = DiffHead(
-            channels=config.get("astable_diff_channels", 16),
-            cond_dim=temb_dim,
-            ctx_dim=D,
-            n_blocks=config.get("astable_diff_blocks", 2),
-            feat_mix=config.get("astable_feat_mix", "conv"),
-            feat_heads=config.get("astable_feat_heads", 2),
-            pad_mode=config.get("astable_pad_mode", "reflect"),
+        # StochLOB reuses only this encoder and explicitly opts out of the legacy
+        # training-time score branch. AlphaStableLOB keeps it by default.
+        self.diff_head = (
+            DiffHead(
+                channels=config.get("astable_diff_channels", 16),
+                cond_dim=temb_dim,
+                ctx_dim=D,
+                n_blocks=config.get("astable_diff_blocks", 2),
+                feat_mix=config.get("astable_feat_mix", "conv"),
+                feat_heads=config.get("astable_feat_heads", 2),
+                pad_mode=config.get("astable_pad_mode", "reflect"),
+            )
+            if config.get("astable_use_score_head", True)
+            else None
         )
 
     # ---- trunk --------------------------------------------------------------
@@ -267,11 +272,15 @@ class AlphaStableLOB(nn.Module):
 
     def score(self, x_in: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Predict the α-stable score from the (EDM-scaled) noised window at ``t``."""
+        if self.diff_head is None:
+            raise RuntimeError("this model was constructed without a score head")
         H, c = self.trunk(x_in, t)
         return self.diff_head(x_in, c, H)
 
     def forward(self, x_in: torch.Tensor, t: torch.Tensor):
         """Joint pass: ``(ŝ, logits)``."""
+        if self.diff_head is None:
+            raise RuntimeError("this model was constructed without a score head")
         H, c = self.trunk(x_in, t)
         logits = self._trend_logits(H)
         s_hat = self.diff_head(x_in, c, H)

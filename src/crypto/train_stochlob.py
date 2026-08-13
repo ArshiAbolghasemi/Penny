@@ -1,9 +1,7 @@
 """Train StochLOB with stochastic latent dynamics active at train and test time.
 
-The classifier loss is averaged over Monte-Carlo latent futures.  The existing
-alpha-stable denoising score head remains an independent training-only auxiliary.
 Use ``--dynamics`` for deterministic/Gaussian/stable/jump/routed ablations and
-``--no-score`` to isolate stochastic forecasting from score matching.
+``--classification-objective`` to compare pathwise and marginal Monte Carlo losses.
 """
 
 from __future__ import annotations
@@ -11,6 +9,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 import re
 import sys
@@ -28,9 +27,6 @@ from torch.optim import AdamW
 from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 from crypto.dataset import build_datasets
-from levy.config import DiffusionConfig
-from levy.diffusion import ForwardProcess
-from models.alphastable import AlphaStableDiffusion
 from models.stochlob import LatentStochasticDynamics, StochLOB
 from utils.stochastic_evaluate import evaluate_stochastic
 from utils.training import (
@@ -108,73 +104,55 @@ def _router_entropy(routing: torch.Tensor) -> torch.Tensor:
     return -(p * p.log()).sum(dim=-1).mean()
 
 
-def _build_score_process(config: dict, device: torch.device, seed: int):
-    objective = config.get("score_objective", "alpha")
-    if objective == "none":
-        return None
-    if objective == "alpha":
-        return AlphaStableDiffusion(
-            d=config["T_past"] * config["n_features"],
-            num_timesteps=config.get("T_max", 1000),
-            alpha=float(config.get("score_alpha", config.get("astable_alpha", 1.62))),
-            cosine_s=config.get("cosine_s", 0.008),
-            num_r=config.get("astable_num_r", 256),
-            mc_samples=config.get("astable_mc", 8192),
-            clip_q=config.get("astable_clip_q", 0.999),
-            seed=seed,
-            device=device,
-        )
-    if objective not in {"gaussian", "jump"}:
-        raise ValueError("score_objective must be none|gaussian|jump|alpha")
-    cfg = DiffusionConfig(
-        process="gaussian" if objective == "gaussian" else "levy",
-        schedule=config.get("schedule", "vp"),
-        num_timesteps=config.get("T_max", 1000),
-        beta_start=config.get("beta_start", 1e-4),
-        beta_end=config.get("beta_end", 0.02),
-        sigma_min=config.get("ve_sigma_min", 1e-2),
-        sigma_max=config.get("ve_sigma_max", 50.0),
-        jump_rate=config.get("levy_jump_rate", 1.0),
-        jump_gamma_shape=config.get("levy_gamma_shape", 1.0),
-        jump_gamma_scale=config.get("levy_gamma_scale", 1.0),
-        table_num_r=config.get("levy_table_num_r", 512),
-        table_mc_samples=config.get("levy_table_mc", 20000),
-        table_seed=seed,
+def _classification_losses(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    label_smoothing: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return pathwise CE and MC marginal predictive NLL.
+
+    ``logits`` has shape ``(M, B, C)``.  The marginal calculation uses
+    log-sum-exp rather than materializing/then logging the mean probabilities, so
+    it remains stable even when the correct class has very small probability.
+    """
+    trajectories, batch, classes = logits.shape
+    expanded_labels = labels.unsqueeze(0).expand(trajectories, -1).reshape(-1)
+    pathwise = F.cross_entropy(
+        logits.reshape(trajectories * batch, classes),
+        expanded_labels,
+        label_smoothing=label_smoothing,
     )
-    return ForwardProcess(cfg, d=config["T_past"] * config["n_features"], device=device)
-
-
-def _score_loss(model, process, objective: str, x: torch.Tensor) -> torch.Tensor:
-    steps = (
-        process.num_timesteps
-        if objective == "alpha"
-        else process.schedule.num_timesteps
+    trajectory_log_probs = F.log_softmax(logits, dim=-1)
+    marginal_log_probs = torch.logsumexp(trajectory_log_probs, dim=0) - math.log(
+        trajectories
     )
-    t = torch.randint(0, steps, (x.shape[0],), device=x.device)
-    if objective == "alpha":
-        x_t, noise, c_in = process.add_noise(x, t)
-        return F.mse_loss(model.score(c_in * x_t, t), process.score_target(noise, t))
-    x_t, _ = process.add_noise(x, t)
-    target = process.score_target(x_t, x, t)
-    prediction = model.score(x_t, t)
-    _, sigma = process.schedule.gather(t)
-    weight = sigma**2
-    if objective == "jump":
-        weight = (
-            weight + process.lambda_t.to(t.device)[t] * process.jump.mean_jump_var()
-        )
-    return (weight * ((prediction - target) ** 2).flatten(1).mean(1)).mean()
+    target_nll = -marginal_log_probs.gather(1, labels.unsqueeze(1)).squeeze(1)
+    smooth_nll = -marginal_log_probs.mean(dim=1)
+    marginal = (
+        (1.0 - label_smoothing) * target_nll + label_smoothing * smooth_nll
+    ).mean()
+    return pathwise, marginal
 
 
-def train_epoch(model, diffusion, loader, optimizer, scheduler, config, device, epoch):
+def train_epoch(model, loader, optimizer, scheduler, config, device, epoch):
     model.train()
-    score_weight = float(config.get("lambda_score", config.get("lambda_diff", 1.0)))
-    score_objective = config.get("score_objective", "alpha")
+    classification_objective = config.get("classification_objective", "pathwise")
+    if classification_objective not in {"pathwise", "marginal"}:
+        raise ValueError("classification_objective must be pathwise|marginal")
     route_weight = float(config.get("lambda_route", 0.0))
     anneal_epochs = max(1, int(config.get("route_anneal_epochs", 10)))
     route_weight *= max(0.0, 1.0 - epoch / anneal_epochs)
     smoothing = float(config.get("label_smoothing", 0.0))
-    totals = {key: 0.0 for key in ("loss", "classification", "score", "route_entropy")}
+    totals = {
+        key: 0.0
+        for key in (
+            "loss",
+            "classification",
+            "pathwise_classification",
+            "marginal_classification",
+            "route_entropy",
+        )
+    }
     count = 0
 
     for batch in loader:
@@ -182,18 +160,15 @@ def train_epoch(model, diffusion, loader, optimizer, scheduler, config, device, 
         label = batch["label"].to(device)
         horizon = batch["horizon"].to(device)
         rollout = model(x, horizon, model.train_trajectories)
-        m, b, classes = rollout.logits.shape
-        cls_loss = F.cross_entropy(
-            rollout.logits.reshape(m * b, classes),
-            label.unsqueeze(0).expand(m, -1).reshape(-1),
-            label_smoothing=smoothing,
+        pathwise_loss, marginal_loss = _classification_losses(
+            rollout.logits, label, label_smoothing=smoothing
         )
-        score_loss = torch.zeros((), device=device)
-        if diffusion is not None and score_weight > 0.0:
-            score_loss = _score_loss(model, diffusion, score_objective, x)
+        cls_loss = (
+            pathwise_loss if classification_objective == "pathwise" else marginal_loss
+        )
         entropy = _router_entropy(rollout.routing)
         # Negative entropy gently encourages early exploration; it is not a 50/50 target.
-        loss = cls_loss + score_weight * score_loss - route_weight * entropy
+        loss = cls_loss - route_weight * entropy
 
         optimizer.zero_grad()
         loss.backward()
@@ -203,7 +178,8 @@ def train_epoch(model, diffusion, loader, optimizer, scheduler, config, device, 
 
         totals["loss"] += loss.item()
         totals["classification"] += cls_loss.item()
-        totals["score"] += score_loss.item()
+        totals["pathwise_classification"] += pathwise_loss.item()
+        totals["marginal_classification"] += marginal_loss.item()
         totals["route_entropy"] += entropy.item()
         count += 1
     return {key: value / max(count, 1) for key, value in totals.items()}
@@ -245,11 +221,8 @@ def run_seed(config: dict, args, seed: int, multi_seed: bool) -> dict:
     config["seed"] = seed
     if args.dynamics is not None:
         config["latent_dynamics"] = args.dynamics
-    if args.no_score:
-        config["lambda_score"] = 0.0
-        config["score_objective"] = "none"
-    elif args.score_objective is not None:
-        config["score_objective"] = args.score_objective
+    if args.classification_objective is not None:
+        config["classification_objective"] = args.classification_objective
     generator = set_seed(seed)
     device = resolve_device(config["device"])
     train_ds, val_ds, test_ds, meta = build_stochlob_datasets(config)
@@ -257,8 +230,10 @@ def run_seed(config: dict, args, seed: int, multi_seed: bool) -> dict:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     mode = config.get("latent_dynamics", "routed")
+    classification_objective = config.get("classification_objective", "pathwise")
     output = (
-        Path(config["checkpoint_dir"]) / f"stochlob_{mode}_{config['symbol']}_{stamp}"
+        Path(config["checkpoint_dir"])
+        / f"stochlob_{mode}_{classification_objective}_{config['symbol']}_{stamp}"
     )
     if multi_seed:
         output = output.with_name(f"{output.name}_seed{seed}")
@@ -266,10 +241,6 @@ def run_seed(config: dict, args, seed: int, multi_seed: bool) -> dict:
     log_sink = logger.add(output / "train.log", level="DEBUG")
 
     model = StochLOB(config).to(device)
-    score_weight = float(config.get("lambda_score", config.get("lambda_diff", 1.0)))
-    diffusion = (
-        _build_score_process(config, device, seed) if score_weight > 0.0 else None
-    )
     workers = min(4, torch.get_num_threads())
     train_loader = DataLoader(
         train_ds,
@@ -288,21 +259,20 @@ def run_seed(config: dict, args, seed: int, multi_seed: bool) -> dict:
         optimizer, config, config["epochs"] * len(train_loader)
     )
     logger.info(
-        "StochLOB mode={} alpha={} steps={} M_train={} M_test={} horizons={} score={}:{}",
+        "StochLOB mode={} cls={} alpha={} steps={} M_train={} M_test={} horizons={}",
         mode,
+        config.get("classification_objective", "pathwise"),
         model.dynamics.alpha,
         model.dynamics.steps,
         model.train_trajectories,
         model.test_trajectories,
         meta["horizons"],
-        config.get("score_objective", "alpha"),
-        score_weight,
     )
 
     best, stale, history = float("-inf"), 0, []
     for epoch in range(config["epochs"]):
         train_metrics = train_epoch(
-            model, diffusion, train_loader, optimizer, scheduler, config, device, epoch
+            model, train_loader, optimizer, scheduler, config, device, epoch
         )
         val_f1, val_acc, diagnostics = validate(
             model, val_loader, device, int(config.get("val_trajectories", 5))
@@ -316,12 +286,13 @@ def run_seed(config: dict, args, seed: int, multi_seed: bool) -> dict:
         }
         history.append(row)
         logger.info(
-            "ep {} loss={:.4f} cls={:.4f} score={:.4f} f1={:.4f} "
+            "ep {} loss={:.4f} cls={:.4f} path={:.4f} marginal={:.4f} f1={:.4f} "
             "pi=({:.3f},{:.3f}) gamma={:.3f} lambda={:.3f} |z|max={:.2f}",
             epoch,
             row["loss"],
             row["classification"],
-            row["score"],
+            row["pathwise_classification"],
+            row["marginal_classification"],
             val_f1,
             row["pi_alpha"],
             row["pi_jump"],
@@ -380,13 +351,12 @@ def run_seed(config: dict, args, seed: int, multi_seed: bool) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "config", nargs="?", default="configs/crypto/coinbase/stochlob/btcirt_ofi.json"
+        "config",
+        nargs="?",
+        default="configs/crypto/coinbase/stochlob/btcirt_ofi_k10.json",
     )
     parser.add_argument("--dynamics", choices=sorted(LatentStochasticDynamics.MODES))
-    parser.add_argument(
-        "--score-objective", choices=["none", "gaussian", "jump", "alpha"]
-    )
-    parser.add_argument("--no-score", action="store_true")
+    parser.add_argument("--classification-objective", choices=["pathwise", "marginal"])
     add_seed_args(parser)
     args = parser.parse_args()
     path = Path(args.config)

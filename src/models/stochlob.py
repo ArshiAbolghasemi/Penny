@@ -217,12 +217,14 @@ class LatentStochasticDynamics(nn.Module):
 
 
 class StochLOB(AlphaStableLOB):
-    """Existing StochLOB encoder/score head plus stochastic predictive futures."""
+    """Existing StochLOB encoder plus stochastic predictive futures."""
 
     family = "stochastic_forecaster"
 
     def __init__(self, config: dict) -> None:
-        super().__init__(config)
+        encoder_config = dict(config)
+        encoder_config["astable_use_score_head"] = False
+        super().__init__(encoder_config)
         self.config = dict(config)
         self.default_horizon = int(config.get("label_k", 10))
         self.train_trajectories = int(config.get("train_trajectories", 4))
