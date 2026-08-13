@@ -5,14 +5,15 @@ generative** — a single backbone learns to *denoise* a limit-order-book (LOB) 
 (the generative objective) **and** to *classify* its short-term price direction (the
 discriminative objective), sharing one representation. The generative diffusion task
 regularises the encoder so the features the classifier reuses are richer than plain
-supervised training would produce; at inference only the cheap classification path
-runs.
+supervised training would produce. The routed StochLOB variant additionally evolves
+the encoded state through stochastic latent futures during both training and inference.
 
 The project forecasts a 3-class LOB **trend** (`down / flat / up`) on crypto data from
 **Binance** (USDT pairs) and **Coinbase** (Iranian Toman pairs), and ships a suite of
 established **discriminative baselines** alongside the joint models for comparison.
 
-- **Joint generative–discriminative models:** JointDiT (Diffusion Transformer, with
+- **Joint generative–discriminative models:** StochLOB (soft-routed α-stable and
+  compound-Poisson latent forecasting with Monte-Carlo inference), JointDiT (Diffusion Transformer, with
   five training objectives — DDPM, consistency, t-EDM, drift, Lévy — plus a two-phase
   probe), JumpGateLOB (jump-diffusion score matching + noise-consistent classification,
   feature-only inference), AlphaStableLOB (the same trunk with a genuine α-stable,
@@ -28,16 +29,13 @@ for the data pipeline, and **[docs/xai](docs/xai/README.md)** for the explainabi
 
 ![StochLOB architecture and workflow](docs/figures/architecture.svg)
 
-StochLOB uses one shared LOB sequence encoder with two training roles. A normalized
-LOB window first follows the clean classifier path: feature normalization, temporal
-sequence encoding, attention-based aggregation, and a three-class trend head for
-`down / flat / up` prediction. During training, a second branch corrupts the same
-window with noise and trains a score head to denoise it. The Levy variant uses
-compound-Poisson jump corruption; the alpha-stable variant uses clipped heavy-tailed
-scale-mixture corruption; the Gaussian variant uses plain Brownian corruption with the
-closed-form score, as the control for the other two. At inference time the corruption
-sampler and score head are disabled, so prediction is a single clean-window forward pass through
-the classifier.
+StochLOB encodes the normalized 60-point LOB history once with the retained BiGRU,
+temporal attention, and attention pool. Starting from that pooled state, it samples
+multiple predictive latent futures over a normalized interval. A state-dependent soft
+router is recomputed at every step and mixes fixed-α stable and compound-Poisson jump
+increments around a shared drift. Their terminal class probabilities are averaged at
+inference; entropy and trajectory disagreement quantify uncertainty. The historical
+score-matching head remains a separate training-time auxiliary.
 
 ## Setup
 
@@ -107,6 +105,14 @@ uv run python -m crypto.train_alphastablelob configs/crypto/coinbase/alphastable
 
 # Gaussian control for the two above (same trunk/objective, closed-form score)
 uv run python -m crypto.train_gaussgatelob   configs/crypto/coinbase/gaussgatelob/btcirt_ofi_k10.json
+
+# routed stochastic latent forecasting, jointly trained at k=10/20/50/100
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json
+
+# key stochastic ablations (add --no-score for dynamics-only variants)
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json --dynamics stable
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json --dynamics jump
+uv run python -m crypto.train_stochlob configs/crypto/coinbase/stochlob/btcirt_ofi.json --dynamics gaussian
 ```
 
 Each run builds/loads the feature cache, trains with early stopping, restores the best

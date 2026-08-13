@@ -8,8 +8,8 @@ Penny frames LOB **trend forecasting** (`down / flat / up`) two ways:
    backbone is trained to be **both** a generative diffusion model (denoising /
    score-matching / consistency over the LOB window) **and** a trend classifier,
    sharing one representation. The generative objective acts as a powerful auxiliary
-   that shapes features the discriminative head reuses; at inference only the cheap
-   feature-only classification path runs.
+   that shapes features the discriminative head reuses. Legacy variants use a
+   feature-only inference path; routed StochLOB samples predictive latent futures.
 
 Every model exposes the **same inference contract** so they are directly comparable:
 
@@ -55,6 +55,7 @@ Each run writes `best.pt`, `config.json` and `training_log.json` to a timestampe
 
 | Model | One-liner | Doc |
 |-------|-----------|-----|
+| **StochLOB** | Retained GRU+attention encoder followed by inference-time soft-routed α-stable/compound-Poisson latent futures, with trajectory uncertainty and an auxiliary score head | [stochlob.md](stochlob.md) |
 | **JointDiT** | Diffusion Transformer trained to jointly denoise + classify; ships with five training objectives (DDPM, consistency, t-EDM, drift, Lévy) plus a two-phase probe variant | [jointdit.md](jointdit.md) |
 | **JumpGateLOB** | Jump-diffusion score matching + noise-consistent classification — simple GRU+attention trunk trained to stay accurate on noisy / jump-bearing windows | [jumpgatelob.md](jumpgatelob.md) |
 | **AlphaStableLOB** | JumpGateLOB's GRU+attention trunk with a genuine **α-stable** (Lévy-stable, power-law-tailed) forward process, trained by generalized score matching | [alphastablelob.md](alphastablelob.md) |
