@@ -60,7 +60,7 @@ import pandas as pd
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
-from crypto.features import extract_features  # noqa: E402
+from crypto.features import extract_features
 
 CRYPTO_DIR = REPO / "data" / "resampled" / "coinbase"
 ALPHASTABLE_CFG_DIR = REPO / "configs" / "crypto" / "coinbase" / "alphastablelob"

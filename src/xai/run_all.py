@@ -235,8 +235,14 @@ def main() -> None:
 
     # Imported here (not at module top) so that --help works even if a heavy
     # dependency of one runner is missing.
-    from xai import run_agreement, run_cka, run_faithfulness, run_gate_sweep, run_ig
-    from xai import run_probes
+    from xai import (
+        run_agreement,
+        run_cka,
+        run_faithfulness,
+        run_gate_sweep,
+        run_ig,
+        run_probes,
+    )
 
     cfg = SMOKE if args.smoke else FULL
     root: Path = args.root

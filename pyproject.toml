@@ -71,6 +71,28 @@ penny-stocks-diffclf         = "stocks.feishu.train_diffclf:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/crypto", "src/models", "src/stocks", "src/xai"]
 
+[tool.ruff.lint.per-file-ignores]
+# These notebooks and notebook-style analysis scripts intentionally perform
+# repository discovery/path setup before importing project modules, and some
+# scripts defer heavy optional imports until the section that uses them.
+"notebooks/**/*.ipynb" = ["BLE001", "C408", "E402", "RUF059", "S110", "S112"]
+"scripts/calibrate_altcoin_kernels.py" = ["E402"]
+"scripts/model_comparison.py" = ["B018", "BLE001", "E402", "S110"]
+"scripts/plot_stochlob_stress.py" = ["E402"]
+"scripts/plot_stress_vs_variance_robustness.py" = ["BLE001", "E402", "EXE001", "S110"]
+"scripts/portfolio_backtest.py" = ["B018", "C408", "E402"]
+"scripts/stochlob_significance.py" = ["E402"]
+# Training-run directory names deliberately use local wall-clock time.
+"src/**/train_*.py" = ["DTZ005"]
+# Explicit same-name aliases make these helpers part of the model modules' APIs.
+"src/models/*.py" = ["PLC0414"]
+# These command/data boundaries report or convert arbitrary third-party failures.
+"scripts/resample_binance.py" = ["BLE001"]
+"scripts/resample_coinbase.py" = ["BLE001"]
+"src/stocks/feishu/build.py" = ["BLE001"]
+"src/stocks/feishu_midprice/build.py" = ["BLE001"]
+"src/utils/flops.py" = ["BLE001"]
+
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu118", extra = "cu118", marker = "sys_platform == 'linux'" },

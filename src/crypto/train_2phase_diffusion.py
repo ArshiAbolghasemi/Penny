@@ -67,7 +67,6 @@ from utils.training import (
     summarize_seed_runs,
 )
 
-
 # ───────────────────────── Phase 1: generative objectives ──────────────────────
 
 
@@ -420,7 +419,7 @@ def _run_seed(base, args, seed: int, multi_seed: bool) -> dict:
     log_sink = logger.add(ckpt_dir / "train.log", level="DEBUG")
 
     # One dataset build shared by both phases (same past-window tensor).
-    train_ds, val_ds, test_ds, alpha, meta = build_datasets(base)
+    train_ds, val_ds, test_ds, _alpha, meta = build_datasets(base)
     base["n_features"] = meta["n_features"]
     logger.info(
         "TWO-PHASE  backbone={}  objective={}  symbol={}  mode={}  k={}  device={}",

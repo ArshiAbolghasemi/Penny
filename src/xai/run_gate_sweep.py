@@ -63,7 +63,7 @@ def main() -> None:
             f"got {type(model).__name__}"
         )
     ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
+    model.load_state_dict(ckpt.get("model", ckpt))
 
     splits = dict(zip(("train", "val", "test"), build_datasets(config)[:3]))
     dataset = splits[args.split]
@@ -97,7 +97,7 @@ def main() -> None:
             {
                 "model": ckpt_dir.name,
                 "split": args.split,
-                "n_windows": int(len(idx)),
+                "n_windows": len(idx),
                 "t_max": t_max,
                 "low_t_boundary": boundary,
                 "gates": gates,

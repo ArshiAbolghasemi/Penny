@@ -16,10 +16,11 @@ keys (``ctabl_d1``, ``ctabl_d2``, ``ctabl_t2``, ``ctabl_dropout``).
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from models.ctabl import CTABLBody
-from models.modules import BiN, count_parameters as count_parameters  # re-export
+from models.modules import BiN  # re-export
+from models.modules import count_parameters as count_parameters
 
 
 class BINCTABL(nn.Module):

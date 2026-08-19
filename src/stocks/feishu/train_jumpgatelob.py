@@ -63,6 +63,8 @@ from torch.utils.data import DataLoader
 from levy.config import DiffusionConfig
 from levy.diffusion import ForwardProcess
 from models.jumpgatelob import JumpGateLOB, count_parameters
+from stocks.feishu.build import build_datasets, discover_symbols
+from stocks.feishu.features import n_features as feishu_n_features
 from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
@@ -74,8 +76,6 @@ from utils.training import (
     set_seed,
     summarize_seed_runs,
 )
-from stocks.feishu.build import build_datasets, discover_symbols
-from stocks.feishu.features import n_features as feishu_n_features
 
 
 def _diffusion_cfg(config: dict) -> DiffusionConfig:

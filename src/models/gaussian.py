@@ -82,7 +82,7 @@ class GaussianDiffusion:
         self.a = a.to(self.device)  # signal coefficient a_t   (T,)
         self.sigma = sigma.to(self.device)  # noise std σ_t     (T,)
 
-    def to(self, device: torch.device | str) -> "GaussianDiffusion":
+    def to(self, device: torch.device | str) -> GaussianDiffusion:
         self.device = torch.device(device)
         self.a = self.a.to(self.device)
         self.sigma = self.sigma.to(self.device)

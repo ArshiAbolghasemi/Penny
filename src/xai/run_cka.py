@@ -100,7 +100,7 @@ def main() -> None:
         ckpt = torch.load(
             args.root / name / "best.pt", map_location=device, weights_only=False
         )
-        model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
+        model.load_state_dict(ckpt.get("model", ckpt))
         key = type(model).__name__
         taps = TAPS[key]
         a, y = collect_activations(model, dataset, config, device, idx, taps)
@@ -151,8 +151,8 @@ def main() -> None:
 
     # within-model self-similarity: a layer vs itself must be 1.0, and the
     # off-diagonals say how much each trunk changes across its own depth
-    for k in acts:
-        m = cka_matrix(acts[k], acts[k], tap_names[k], tap_names[k])
+    for k, act in acts.items():
+        m = cka_matrix(act, act, tap_names[k], tap_names[k])
         logger.info(
             "CKA {} vs itself\n{}",
             k,
@@ -173,7 +173,7 @@ def main() -> None:
         json.dumps(
             {
                 "split": args.split,
-                "n_windows": int(len(idx)),
+                "n_windows": len(idx),
                 "seed": args.seed,
                 "estimator": "unbiased_hsic",
                 "pairs": out_rows,

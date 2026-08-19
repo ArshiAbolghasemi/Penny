@@ -25,7 +25,7 @@ dla_dropout         dropout before the head       (default 0.1)
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from models.modules import count_parameters as count_parameters  # re-export
 

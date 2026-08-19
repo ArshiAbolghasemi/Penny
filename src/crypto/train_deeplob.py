@@ -25,6 +25,7 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
 from crypto.dataset import build_datasets
+from models.deeplob import DeepLOB, count_parameters
 from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
@@ -36,7 +37,6 @@ from utils.training import (
     set_seed,
     summarize_seed_runs,
 )
-from models.deeplob import DeepLOB, count_parameters
 
 
 def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):

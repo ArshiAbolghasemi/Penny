@@ -58,7 +58,7 @@ class ForwardProcess:
                 f"unknown process '{self.process}' (expected 'gaussian' or 'levy')"
             )
 
-    def to(self, device: torch.device | str) -> "ForwardProcess":
+    def to(self, device: torch.device | str) -> ForwardProcess:
         self.device = torch.device(device)
         self.schedule = self.schedule.to(device)
         self.lambda_t = self.lambda_t.to(device)

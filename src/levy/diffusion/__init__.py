@@ -18,7 +18,7 @@ __all__ = [
     "ForwardProcess",
     "GeneralizedScoreTable",
     "JumpParams",
-    "build_score_table",
     "NoiseSchedule",
+    "build_score_table",
     "make_schedule",
 ]

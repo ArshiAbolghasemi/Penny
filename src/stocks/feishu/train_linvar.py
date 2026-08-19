@@ -24,6 +24,9 @@ from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
+from models.linvar import LinVAR, count_parameters
+from stocks.feishu.build import build_datasets, discover_symbols
+from stocks.feishu.features import n_features as feishu_n_features
 from utils.evaluate import run_test
 from utils.training import (
     add_seed_args,
@@ -34,9 +37,6 @@ from utils.training import (
     set_seed,
     summarize_seed_runs,
 )
-from models.linvar import LinVAR, count_parameters
-from stocks.feishu.build import build_datasets, discover_symbols
-from stocks.feishu.features import n_features as feishu_n_features
 
 
 def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):

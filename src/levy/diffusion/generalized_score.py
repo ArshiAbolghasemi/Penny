@@ -150,7 +150,7 @@ class GeneralizedScoreTable:
     h: torch.Tensor  # (T, num_r) score magnitude
     d: int  # data dimensionality the table was built for
 
-    def to(self, device: torch.device | str) -> "GeneralizedScoreTable":
+    def to(self, device: torch.device | str) -> GeneralizedScoreTable:
         return GeneralizedScoreTable(self.r_grid.to(device), self.h.to(device), self.d)
 
     def h_at(self, r: torch.Tensor, t: torch.Tensor) -> torch.Tensor:

@@ -47,9 +47,9 @@ os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
+from torch import nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 

@@ -94,7 +94,7 @@ def main() -> None:
 
         model = _resolve_model(ckpt_dir, config).to(device)
         ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
+        model.load_state_dict(ckpt.get("model", ckpt))
 
         idx = np.arange(len(dataset))
         if args.n_windows < len(idx):

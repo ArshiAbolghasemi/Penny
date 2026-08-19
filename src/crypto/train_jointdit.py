@@ -26,12 +26,13 @@ os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 
 import torch
 import torch.nn.functional as F
-from models.ddpm import DDPMScheduler
 from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
 from crypto.dataset import build_datasets
+from models.ddpm import DDPMScheduler
+from models.jointdit import JointDiT, count_parameters
 from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
@@ -43,7 +44,6 @@ from utils.training import (
     set_seed,
     summarize_seed_runs,
 )
-from models.jointdit import JointDiT, count_parameters
 
 
 def _train_epoch(model, sched, loader, optimizer, lr_sched, config, device):

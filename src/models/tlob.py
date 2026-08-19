@@ -26,10 +26,10 @@ tlob_sin_emb    use sinusoidal PE         (default True; False = learnable)
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
+from torch import nn
 
-from models.modules import BiN, count_parameters as count_parameters  # re-export
-
+from models.modules import BiN  # re-export
+from models.modules import count_parameters as count_parameters
 
 # ── Positional encoding ───────────────────────────────────────────────────────
 

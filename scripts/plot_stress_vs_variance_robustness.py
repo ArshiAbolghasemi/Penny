@@ -52,22 +52,21 @@ REPO = find_repo_root(Path.cwd())
 os.chdir(REPO)
 sys.path.insert(0, str(REPO / "src"))
 
-from crypto.dataset import build_datasets  # noqa: E402
-from crypto.features import extract_features, n_features  # noqa: E402
-from crypto.labels import compute_trend_series  # noqa: E402
-from crypto.loader import build_cache  # noqa: E402
-from models.alphastablelob import AlphaStableLOB  # noqa: E402
-from models.binctabl import BINCTABL  # noqa: E402
-from models.ctabl import CTABL  # noqa: E402
-from models.deeplob import DeepLOB  # noqa: E402
-from models.dla import DLA  # noqa: E402
-from models.gaussgatelob import GaussGateLOB  # noqa: E402
-from models.jumpgatelob import JumpGateLOB  # noqa: E402
-from models.linvar import LinVAR  # noqa: E402
-from models.logreg import LogReg  # noqa: E402
-from models.ofsatnet import OFSATNet  # noqa: E402
-from models.tlob import TLOB  # noqa: E402
-
+from crypto.dataset import build_datasets
+from crypto.features import extract_features, n_features
+from crypto.labels import compute_trend_series
+from crypto.loader import build_cache
+from models.alphastablelob import AlphaStableLOB
+from models.binctabl import BINCTABL
+from models.ctabl import CTABL
+from models.deeplob import DeepLOB
+from models.dla import DLA
+from models.gaussgatelob import GaussGateLOB
+from models.jumpgatelob import JumpGateLOB
+from models.linvar import LinVAR
+from models.logreg import LogReg
+from models.ofsatnet import OFSATNet
+from models.tlob import TLOB
 
 MODEL_REGISTRY = {
     "dla": (DLA, "dla_"),

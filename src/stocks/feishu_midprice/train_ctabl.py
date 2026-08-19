@@ -24,6 +24,9 @@ from loguru import logger
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
+from models.ctabl import CTABL, count_parameters
+from stocks.feishu.features import n_features as feishu_n_features
+from stocks.feishu_midprice.build import build_datasets, discover_symbols
 from utils.evaluate import run_test
 from utils.flops import log_gflops
 from utils.training import (
@@ -35,9 +38,6 @@ from utils.training import (
     set_seed,
     summarize_seed_runs,
 )
-from models.ctabl import CTABL, count_parameters
-from stocks.feishu_midprice.build import build_datasets, discover_symbols
-from stocks.feishu.features import n_features as feishu_n_features
 
 
 def _train_epoch(model, loader, optimizer, scheduler, device, grad_clip):
