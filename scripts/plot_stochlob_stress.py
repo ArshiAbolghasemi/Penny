@@ -26,13 +26,16 @@ for the baseline and for each diffusion model. Decile 10 is the stressed slice.
 
 What is plotted
 ---------------
-Per horizon, a 2x3 figure:
+Per horizon, a 2x3 figure, ordered answer-first:
 
-  * row 1 — macro-F1 by decile, all four models. The baseline is drawn in gray as
-    the reference; the three diffusion models carry the categorical hues. Context.
-  * row 2 — Δmacro-F1 (model − baseline) by decile with 95% bootstrap bands and a
+  * row 1 — Δmacro-F1 (model − baseline) by decile with 95% bootstrap bands and a
     zero reference line. This is the panel that answers the question: above zero
-    means diffusion wins in that slice.
+    means diffusion wins in that slice, and a band clearing zero is the paired
+    block-bootstrap test read off the figure — the percentile interval excludes
+    zero exactly when its two-sided sign p-value is below 0.05.
+  * row 2 — macro-F1 by decile, all four models. The baseline is drawn in gray as
+    the reference; the three diffusion models carry the categorical hues. Context
+    for how much headroom row 1's Δ is a slice of.
 
 Plus a summary figure: the extreme-decile Δ with confidence interval for every
 (horizon, model), so the "does it help where it should" answer is one glance.
@@ -70,11 +73,11 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import torch  # noqa: E402
-from loguru import logger  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+from loguru import logger
 
 REPO = Path(__file__).resolve().parent.parent
 os.chdir(REPO)
@@ -82,22 +85,23 @@ for _p in (REPO, REPO / "src", REPO / "scripts"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from crypto.dataset import build_datasets  # noqa: E402
-from stochlob_significance import (  # noqa: E402
+from stochlob_significance import (
     DATA_CONFIG,
     FEATURE_MODE,
     HORIZONS,
     SYMBOL,
     TARGET_PREFIXES,
+    _block_length,
     _macro_f1_from_conf,
     discover_runs,
     load_model,
     paired_block_bootstrap,
     paired_block_permutation,
     predict_all,
-    _block_length,
 )
-from torch.utils.data import DataLoader  # noqa: E402
+from torch.utils.data import DataLoader
+
+from crypto.dataset import build_datasets
 
 BATCH = 256
 STAT_SEED = 20260806
@@ -298,34 +302,6 @@ def _style(ax):
     ax.set_axisbelow(True)
 
 
-def _place_labels(ax, entries, x_at, pad_frac=0.055):
-    """Direct-label series at ``x_at``, nudged apart so they never overlap.
-
-    The Δ lines converge near zero in the calm deciles, which stacks the labels on
-    top of each other. Sort by value and enforce a minimum vertical gap (a fraction
-    of the axis span) so every label stays readable — direct labels are the relief
-    the aqua series' sub-3:1 contrast requires, so they cannot be allowed to collide.
-    """
-    lo, hi = ax.get_ylim()
-    gap = (hi - lo) * pad_frac
-    placed = []
-    for y, text, color in sorted(entries, key=lambda e: e[0]):
-        if placed and y - placed[-1][0] < gap:
-            y = placed[-1][0] + gap
-        placed.append((y, text, color))
-    for y, text, color in placed:
-        ax.annotate(
-            text,
-            xy=(x_at, y),
-            xytext=(5, 0),
-            textcoords="offset points",
-            color=color,
-            fontsize=8,
-            va="center",
-            annotation_clip=False,
-        )
-
-
 def plot_horizon(df: pd.DataFrame, k: int, out_dir: Path) -> Path:
     sub = df[df["k"] == k]
     targets = [t for t in MODEL_COLOR if t in set(sub["target"])]
@@ -335,8 +311,22 @@ def plot_horizon(df: pd.DataFrame, k: int, out_dir: Path) -> Path:
     for j, cond in enumerate(CONDITIONS):
         cs = sub[sub["condition"] == cond]
 
-        # row 1 — absolute macro-F1 by decile (context)
+        # row 1 — Δ vs baseline with 95% bootstrap bands (the answer panel)
         ax = axes[0, j]
+        ax.axhline(0, color=ZERO_COLOR, lw=1.5, ls="--", zorder=2)
+        for t in targets:
+            r = cs[cs["target"] == t].sort_values("decile")
+            ax.fill_between(
+                x, r["d_f1_lo"], r["d_f1_hi"], color=MODEL_COLOR[t], alpha=0.15, lw=0
+            )
+            ax.plot(x, r["d_macro_f1"], color=MODEL_COLOR[t], lw=2, marker="o", ms=4)
+        ax.set_title(CONDITION_LABEL[cond], fontsize=9, loc="left", color="#52514e")
+        if j == 0:
+            ax.set_ylabel("Δ macro-F1  (model − baseline)")
+        _style(ax)
+
+        # row 2 — absolute macro-F1 by decile (context for the Δ above)
+        ax = axes[1, j]
         base = cs[cs["target"] == targets[0]].sort_values("decile")
         ax.plot(
             x,
@@ -353,51 +343,27 @@ def plot_horizon(df: pd.DataFrame, k: int, out_dir: Path) -> Path:
             ax.plot(
                 x, r["f1_target"], color=MODEL_COLOR[t], lw=2, marker="o", ms=4, label=t
             )
-        ax.set_title(CONDITION_LABEL[cond], fontsize=9, loc="left", color="#52514e")
-        if j == 0:
-            ax.set_ylabel("macro-F1")
-        _style(ax)
-
-        # row 2 — Δ vs baseline with 95% bootstrap bands (the answer panel)
-        ax = axes[1, j]
-        ax.axhline(0, color=ZERO_COLOR, lw=1.5, ls="--", zorder=2)
-        labels = []
-        for t in targets:
-            r = cs[cs["target"] == t].sort_values("decile")
-            ax.fill_between(
-                x, r["d_f1_lo"], r["d_f1_hi"], color=MODEL_COLOR[t], alpha=0.15, lw=0
-            )
-            ax.plot(x, r["d_macro_f1"], color=MODEL_COLOR[t], lw=2, marker="o", ms=4)
-            labels.append(
-                (
-                    float(r["d_macro_f1"].iloc[-1]),
-                    t.replace("gatelob", "").replace("lob", ""),
-                    MODEL_COLOR[t],
-                )
-            )
-        _place_labels(ax, labels, N_DECILES)
         ax.set_xlabel(f"{cond} decile   (10 = most stressed)")
         if j == 0:
-            ax.set_ylabel("Δ macro-F1  (model − baseline)")
+            ax.set_ylabel("macro-F1")
         ax.set_xticks(x)
         _style(ax)
 
-    axes[0, 0].legend(frameon=False, fontsize=8, loc="best")
-    fig.suptitle(
-        f"{SYMBOL}  k={k} — diffusion vs CE-only baseline, by stress decile",
-        x=0.01,
-        ha="left",
-        fontsize=11,
+    # One figure-level legend for both rows: the colour of a series means the same
+    # model in the Δ panel and the macro-F1 panel, so repeating the key per axes —
+    # or direct-labelling the Δ lines, which collide where they converge near zero —
+    # would only spend ink on the same mapping three or six times over.
+    handles, labels = axes[1, 0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper left",
+        bbox_to_anchor=(0.01, 1.0),
+        ncol=len(labels),
+        frameon=False,
+        fontsize=9,
     )
-    fig.text(
-        0.01,
-        0.005,
-        "above zero (bottom row) = the diffusion objective wins that slice; "
-        "bands are 95% block-bootstrap intervals",
-        fontsize=8,
-        color="#52514e",
-    )
-    fig.tight_layout(rect=(0, 0.02, 1, 0.97))
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     out = out_dir / f"stochlob_stress_k{k}.pdf"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
