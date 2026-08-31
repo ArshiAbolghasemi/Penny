@@ -1,4 +1,4 @@
-# Penny
+# StochLOB
 
 **This repository trains diffusion models that are, at the same time, discriminative and
 generative** — a single backbone learns to *denoise* a limit-order-book (LOB) window
