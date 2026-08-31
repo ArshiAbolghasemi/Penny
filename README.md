@@ -1,6 +1,6 @@
 # Penny
 
-**Penny trains diffusion models that are, at the same time, discriminative and
+**This repository trains diffusion models that are, at the same time, discriminative and
 generative** — a single backbone learns to *denoise* a limit-order-book (LOB) window
 (the generative objective) **and** to *classify* its short-term price direction (the
 discriminative objective), sharing one representation. The generative diffusion task
