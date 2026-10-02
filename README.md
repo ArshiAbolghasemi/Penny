@@ -1,5 +1,7 @@
 # Penny
 
+🎉 **Our paper, StochLOB, has been accepted for an oral presentation at the NeurIPS 2026 Workshop on AI for Stochastic Dynamics!**
+
 **Penny trains diffusion models that are, at the same time, discriminative and
 generative** — a single backbone learns to *denoise* a limit-order-book (LOB) window
 (the generative objective) **and** to *classify* its short-term price direction (the
@@ -193,4 +195,31 @@ src/
   utils/          training loop helpers, evaluation, FLOPs, PCGrad
 docs/             this documentation
 data/             DVC-tracked (not in git)
+```
+
+## How to cite
+
+If you use this work, please cite our paper,
+**StochLOB: Heavy-Tailed Score Matching for Robust Limit Order Book Trend Prediction**,
+accepted for an oral presentation at the NeurIPS 2026 Workshop on AI for Stochastic
+Dynamics. The LaTeX source is available in [neurips/](neurips/neurips_2026.tex).
+
+```bibtex
+@inproceedings{abolghasemi2026stochlob,
+  title     = {{StochLOB}: Heavy-Tailed Score Matching for Robust Limit Order Book Trend Prediction},
+  author    = {Abolghasemi, Arshia and
+               Tavakoli, Seyed Reza and
+               Naderi, Parsa and
+               Mirzaei, Nazanin and
+               Jahani, Behrad and
+               Yousefzadeh, Saba and
+               Javaheri, Tahereh and
+               Rohban, Mohammad Hosein and
+               Alirezaei, Marjan and
+               Aminian, Gholamali and
+               Habibnia, Ali},
+  booktitle = {NeurIPS 2026 Workshop on AI for Stochastic Dynamics},
+  year      = {2026},
+  url       = {}
+}
 ```
