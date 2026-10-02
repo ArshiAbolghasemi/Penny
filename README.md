@@ -199,10 +199,7 @@ data/             DVC-tracked (not in git)
 
 ## How to cite
 
-If you use this work, please cite our paper,
-**StochLOB: Heavy-Tailed Score Matching for Robust Limit Order Book Trend Prediction**,
-accepted for an oral presentation at the NeurIPS 2026 Workshop on AI for Stochastic
-Dynamics. The LaTeX source is available in [neurips/](neurips/neurips_2026.tex).
+If you use this work, please cite our paper, **“StochLOB: Heavy-Tailed Score Matching for Robust Limit Order Book Trend Prediction,”** accepted for an oral presentation at the **NeurIPS 2026 Workshop on AI for Stochastic Dynamics (STODY)**.
 
 ```bibtex
 @inproceedings{abolghasemi2026stochlob,
